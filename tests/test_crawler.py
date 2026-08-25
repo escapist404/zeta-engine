@@ -7,7 +7,7 @@ from zeta_engine.crawl_queue import (
     create_queue_tables,
     task_counts,
 )
-from zeta_engine.crawler import crawl_urls
+from zeta_engine.crawler import SKIPPED_PAGE, crawl_urls
 from zeta_engine.storage import create_tables, list_documents
 
 
@@ -29,7 +29,7 @@ class CrawlerTest(unittest.TestCase):
         create_tables(document_db)
         create_queue_tables(queue_db)
 
-        crawl_urls(
+        stats = crawl_urls(
             document_db,
             queue_db,
             ["https://a.test/", "https://b.test/"],
@@ -43,6 +43,9 @@ class CrawlerTest(unittest.TestCase):
             set(PAGES),
         )
         self.assertEqual(task_counts(queue_db), {"done": 3})
+        self.assertEqual(stats["scheduled"], 3)
+        self.assertEqual(stats["processed"], 3)
+        self.assertEqual(stats["saved"], 3)
         self.assertIsNone(
             document_db.execute(
                 "SELECT 1 FROM sqlite_master WHERE name = 'crawl_tasks'"
@@ -86,6 +89,54 @@ class CrawlerTest(unittest.TestCase):
 
         self.assertEqual(task_counts(queue_db), {"done": 3})
         self.assertEqual(get_html.call_count, 3)
+
+    @patch(
+        "zeta_engine.crawler.get_html",
+        side_effect=[
+            None,
+            "<html><title>A</title><body>正文</body></html>",
+        ],
+    )
+    def test_failed_page_is_retried_and_counted(self, _get_html) -> None:
+        document_db = sqlite3.connect(":memory:")
+        queue_db = sqlite3.connect(":memory:")
+        create_tables(document_db)
+        create_queue_tables(queue_db)
+
+        stats = crawl_urls(
+            document_db,
+            queue_db,
+            ["https://a.test/"],
+            max_pages=1,
+            download_workers=1,
+            per_host_delay=0,
+        )
+
+        self.assertEqual(stats["processed"], 2)
+        self.assertEqual(stats["retried"], 1)
+        self.assertEqual(stats["saved"], 1)
+        self.assertEqual(task_counts(queue_db), {"done": 1})
+
+    @patch("zeta_engine.crawler.get_html", return_value=SKIPPED_PAGE)
+    def test_skipped_non_html_is_not_retried(self, _get_html) -> None:
+        document_db = sqlite3.connect(":memory:")
+        queue_db = sqlite3.connect(":memory:")
+        create_tables(document_db)
+        create_queue_tables(queue_db)
+
+        stats = crawl_urls(
+            document_db,
+            queue_db,
+            ["https://a.test/"],
+            max_pages=1,
+            download_workers=1,
+            per_host_delay=0,
+        )
+
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(stats["retried"], 0)
+        self.assertEqual(task_counts(queue_db), {"done": 1})
 
 
 if __name__ == "__main__":
