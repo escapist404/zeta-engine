@@ -1,7 +1,10 @@
 import logging
 from pathlib import Path
 
-import zeta_engine
+from zeta_engine.constants import SEED_URLS
+from zeta_engine.crawl_queue import connect_queue, create_queue_tables
+from zeta_engine.crawler import crawl_urls
+from zeta_engine.storage import connect, create_tables
 
 log_file = Path("logs/zeta-engine.log")
 log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -15,6 +18,18 @@ logging.basicConfig(
     ],
 )
 
-db = zeta_engine.storage.connect("data/zeta.db")
-zeta_engine.storage.create_tables(db)
-zeta_engine.crawler.crawl_url(db, "http://ai.ruc.edu.cn/", allowed_domains=zeta_engine.constants.SEED_URLS)
+with (
+    connect("data/zeta.db") as document_db,
+    connect_queue("data/crawl_queue.db") as queue_db,
+):
+    create_tables(document_db)
+    create_queue_tables(queue_db)
+    crawl_urls(
+        document_db,
+        queue_db,
+        SEED_URLS,
+        allowed_domains=SEED_URLS,
+        max_pages=500000,
+        download_workers=8,
+        per_host_delay=0.5,
+    )
