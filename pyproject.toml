@@ -1,0 +1,18 @@
+[project]
+name = "zeta-engine"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "jieba>=0.42.1",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+zeta-engine = "zeta_engine:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
