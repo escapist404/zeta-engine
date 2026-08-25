@@ -52,6 +52,24 @@ def recover_tasks(connection: sqlite3.Connection) -> int:
     return cursor.rowcount
 
 
+def skip_template_tasks(connection: sqlite3.Connection) -> int:
+    cursor = connection.execute(
+        """
+        UPDATE crawl_tasks
+        SET state = 'done', last_error = 'template URL skipped'
+        WHERE state IN ('pending', 'processing')
+          AND (
+              url LIKE '%{{%'
+              OR url LIKE '%}}%'
+              OR lower(url) LIKE '%7b%7b%'
+              OR lower(url) LIKE '%7d%7d%'
+          )
+        """
+    )
+    connection.commit()
+    return cursor.rowcount
+
+
 def claim_pending_tasks(
     connection: sqlite3.Connection,
     limit: int,

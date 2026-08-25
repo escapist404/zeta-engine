@@ -1,8 +1,9 @@
 import logging
 import sqlite3
+from collections import deque
 from datetime import datetime
 from queue import Queue
-from threading import Lock, Thread
+from threading import Condition, Lock, Thread
 from time import monotonic, sleep
 from urllib.parse import urljoin, urlsplit
 
@@ -17,13 +18,15 @@ from zeta_engine.crawl_queue import (
     enqueue_tasks,
     fail_task,
     recover_tasks,
+    skip_template_tasks,
     task_counts,
 )
 from zeta_engine.storage import Document, save_document
-from zeta_engine.utils import normalize_url
+from zeta_engine.utils import url_normalize
 
 
 logger = logging.getLogger(__name__)
+SKIPPED_PAGE = object()
 
 
 def get_html(
@@ -31,7 +34,7 @@ def get_html(
     headers: dict = HEADERS,
     timeout: int = TIMEOUT,
     session: requests.Session | None = None,
-) -> str | None:
+) -> str | None | object:
     try:
         client = session or requests
         response = client.get(url=url, headers=headers, timeout=timeout)
@@ -40,7 +43,7 @@ def get_html(
         content_type = response.headers.get("Content-Type", "").lower()
         if content_type and "html" not in content_type:
             logger.info("跳过非 HTML 页面: %s", url)
-            return None
+            return SKIPPED_PAGE
 
         response.encoding = response.apparent_encoding
         return response.text
@@ -52,7 +55,7 @@ def get_html(
 def extract_page(html: str, url: str) -> tuple[Document, list[str]]:
     soup = BeautifulSoup(html, "html.parser")
     links = [
-        normalize_url(urljoin(url, tag["href"].strip()))
+        url_normalize(urljoin(url, tag["href"].strip()))
         for tag in soup.find_all("a", href=True)
         if tag["href"].strip()
     ]
@@ -80,33 +83,56 @@ def crawl_urls(
     download_workers: int = 4,
     per_host_delay: float = 1.0,
     max_attempts: int = 3,
-) -> None:
+) -> dict[str, int]:
+    stats = {
+        "scheduled": 0,
+        "processed": 0,
+        "saved": 0,
+        "retried": 0,
+        "failed": 0,
+    }
     if max_pages <= 0:
-        return
+        return stats
     if download_workers <= 0:
         raise ValueError("download_workers 必须大于 0")
     if max_attempts <= 0:
         raise ValueError("max_attempts 必须大于 0")
 
     allowed_hosts = {
-        urlsplit(normalize_url(url)).hostname
+        urlsplit(url_normalize(url)).hostname
         for url in (allowed_domains or seed_urls)
     }
     allowed_hosts.discard(None)
 
-    request_queue: Queue[str | None] = Queue()
-    processing_queue: Queue[tuple[str, str | None]] = Queue(
+    request_queue: deque[str | None] = deque()
+    request_condition = Condition()
+    processing_queue: Queue[tuple[str, str | None | object]] = Queue(
         maxsize=download_workers * 2
     )
     host_next_request: dict[str, float] = {}
     cooldown_lock = Lock()
     scheduled_count = 0
+    outstanding = 0
+
+    def push_request(url: str | None, *, priority: bool = False) -> None:
+        with request_condition:
+            if priority:
+                request_queue.appendleft(url)
+            else:
+                request_queue.append(url)
+            request_condition.notify()
+
+    def pop_request() -> str | None:
+        with request_condition:
+            while not request_queue:
+                request_condition.wait()
+            return request_queue.popleft()
 
     def schedule(urls: list[str] | tuple[str, ...]) -> None:
-        nonlocal scheduled_count
+        nonlocal outstanding, scheduled_count
         accepted = []
         for url in urls:
-            normalized = normalize_url(url)
+            normalized = url_normalize(url)
             parts = urlsplit(normalized)
             if (
                 parts.scheme in {"http", "https"}
@@ -119,7 +145,9 @@ def crawl_urls(
                 break
             if claim_task(queue_connection, url):
                 scheduled_count += 1
-                request_queue.put(url)
+                stats["scheduled"] = scheduled_count
+                outstanding += 1
+                push_request(url)
 
     def wait_for_host(url: str) -> None:
         host = urlsplit(url).hostname or ""
@@ -134,7 +162,7 @@ def crawl_urls(
     def download_worker() -> None:
         with requests.Session() as session:
             while True:
-                url = request_queue.get()
+                url = pop_request()
                 try:
                     if url is None:
                         return
@@ -147,8 +175,6 @@ def crawl_urls(
                     logger.warning("下载页面失败: %s (%s)", url, error)
                     if url is not None:
                         processing_queue.put((url, None))
-                finally:
-                    request_queue.task_done()
 
     recovered = recover_tasks(queue_connection)
     if recovered:
@@ -160,11 +186,14 @@ def crawl_urls(
         max_pages - scheduled_count,
     ):
         scheduled_count += 1
-        request_queue.put(url)
+        stats["scheduled"] = scheduled_count
+        outstanding += 1
+        push_request(url)
 
     if not scheduled_count:
         logger.info("没有待爬任务: %s", task_counts(queue_connection))
-        return
+        logger.info("本次统计: %s", stats)
+        return stats
 
     workers = [
         Thread(target=download_worker, name=f"downloader-{index}", daemon=True)
@@ -174,59 +203,76 @@ def crawl_urls(
         worker.start()
 
     logger.info("开始爬取，本次加载 %s 个任务", scheduled_count)
-    processed = 0
+
+    def retry_or_fail(url: str, error: str) -> None:
+        nonlocal outstanding
+        state = fail_task(
+            queue_connection,
+            url,
+            error,
+            max_attempts,
+        )
+        if state == "pending":
+            # Mark the retry as processing before putting it back. This both
+            # increments attempts and lets startup recovery find interruptions.
+            claim_task(queue_connection, url)
+            push_request(url, priority=True)
+            outstanding += 1
+            stats["retried"] += 1
+            logger.info("页面重试: %s (重试数=%s)", url, stats["retried"])
+        else:
+            stats["failed"] += 1
+            logger.info("页面未保存: state=%s url=%s", state, url)
 
     try:
-        while processed < scheduled_count:
+        while outstanding:
             url, html = processing_queue.get()
             try:
+                outstanding -= 1
+                stats["processed"] += 1
+                if html is SKIPPED_PAGE:
+                    complete_task(queue_connection, url)
+                    stats["skipped"] += 1
+                    logger.info("页面已跳过: %s", url)
+                    continue
+
                 if html is None:
-                    state = fail_task(
-                        queue_connection,
-                        url,
-                        "获取页面失败",
-                        max_attempts,
-                    )
-                    logger.info("页面未保存: state=%s url=%s", state, url)
+                    retry_or_fail(url, "获取页面失败")
                     continue
 
                 document, links = extract_page(html, url)
                 document_id = save_document(document_connection, document)
                 schedule(links)
                 complete_task(queue_connection, url)
+                stats["saved"] += 1
                 logger.info("页面已保存: id=%s url=%s", document_id, url)
             except Exception as error:
-                state = fail_task(
-                    queue_connection,
-                    url,
-                    str(error),
-                    max_attempts,
-                )
+                retry_or_fail(url, str(error))
                 logger.warning(
-                    "处理页面失败: state=%s url=%s (%s)",
-                    state,
+                    "处理页面失败: url=%s (%s)",
                     url,
                     error,
                 )
             finally:
-                processed += 1
                 processing_queue.task_done()
+                if stats["processed"] % 100 == 0:
+                    logger.info("爬取进度: %s", stats)
     except KeyboardInterrupt:
         recovered = recover_tasks(queue_connection)
         logger.info("爬取已中断，%s 个任务等待下次继续", recovered)
         raise
 
     for _ in workers:
-        request_queue.put(None)
-    request_queue.join()
+        push_request(None)
     for worker in workers:
         worker.join()
 
     logger.info(
-        "爬取结束，共处理 %s 个页面，队列状态: %s",
-        processed,
+        "爬取结束: %s，队列状态: %s",
+        stats,
         task_counts(queue_connection),
     )
+    return stats
 
 
 def crawl_url(
@@ -235,8 +281,8 @@ def crawl_url(
     seed_url: str,
     allowed_domains: list[str] | tuple[str, ...] | None = None,
     **options,
-) -> None:
-    crawl_urls(
+) -> dict[str, int]:
+    return crawl_urls(
         document_connection,
         queue_connection,
         [seed_url],
