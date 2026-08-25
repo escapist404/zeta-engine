@@ -9,5 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Data
+data
+logs/
+
 # Misc
 .DS_Store
