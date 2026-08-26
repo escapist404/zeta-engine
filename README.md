@@ -38,7 +38,25 @@ uv run zeta-engine crawl \
 uv run zeta-engine crawl --help
 ```
 
-### 查看抓取统计
+### 构造索引
+
+```bash
+uv run zeta-engine index --mode default
+uv run zeta-engine index --mode search --log-file logs/zeta-engine.log
+```
+
+索引开始、每处理 100 篇文档以及索引完成时都会输出日志。
+
+### 查询
+
+```bash
+uv run zeta-engine search "中国人民大学"
+uv run zeta-engine search "中国人民大学" --phrase --limit 20
+```
+
+普通查询会分词并要求所有词都命中，标题命中的结果优先；`--phrase` 要求词和位置连续匹配。
+
+### 统计
 
 ```bash
 uv run zeta-engine stats
@@ -48,7 +66,8 @@ uv run zeta-engine stats
 
 ```bash
 uv run zeta-engine stats \
-  --document-db data/zeta.db
+  --document-db data/zeta.db \
+  --index-db data/index.db
 ```
 
 ## 配置
