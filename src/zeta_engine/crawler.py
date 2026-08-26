@@ -53,14 +53,26 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         if tag["href"].strip()
     ]
 
-    for tag in soup.find_all(["script", "style", "noscript"]):
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+
+    for tag in soup.select(
+        "script, style, noscript, template, nav, aside, [hidden], "
+        "[aria-hidden='true'], header.main-header, #search_warp, "
+        ".stricky-header, .page_content > .fl, .crumbs, .page_nav, "
+        ".footer, .point_out, .mobile-nav__wrapper"
+    ):
         tag.decompose()
 
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    content = (
+        soup.select_one("#articleDiv")
+        or soup.select_one(".notice_list")
+        or soup.body
+        or soup
+    )
     document = (
         url,
         title,
-        soup.get_text(" ", strip=True),
+        content.get_text(" ", strip=True),
         datetime.now().isoformat(),
     )
     return document, links
