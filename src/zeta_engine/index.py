@@ -1,11 +1,17 @@
 import logging
 import unicodedata
 
+from functools import cache
+from pathlib import Path
+
 import jieba
 
 from zeta_engine.storage import Storage
 
 logger = logging.getLogger(__name__)
+# Union of the four lists from https://github.com/goto456/stopwords
+STOPWORDS_PATH = Path(__file__).with_name("stopwords.txt")
+STOPWORDS_VERSION = "goto456-bf8b03b9-union"
 
 
 def text_normalize(text: str) -> str:
@@ -14,13 +20,27 @@ def text_normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+@cache
+def load_stopwords() -> frozenset[str]:
+    return frozenset(
+        text_normalize(line)
+        for line in STOPWORDS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
 def tokenize_with_positions(
     text: str,
     mode: str = "default",
 ) -> list[tuple[str, int]]:
     if mode not in {"default", "search"}:
         raise ValueError(f"不支持的分词模式: {mode}")
-    return [(token, start) for token, start, _ in jieba.tokenize(text, mode=mode)]
+    stopwords = load_stopwords()
+    return [
+        (token, start)
+        for token, start, _ in jieba.tokenize(text, mode=mode)
+        if token.strip() and token.casefold() not in stopwords
+    ]
 
 
 def load_user_dictionary() -> None:
@@ -36,6 +56,9 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
     documents = storage.documents
     index = storage.index
     mode_changed = index.get_metadata("tokenizer_mode") != mode
+    stopwords_changed = (
+        index.get_metadata("stopwords_version") != STOPWORDS_VERSION
+    )
 
     stats = {
         "seen": 0,
@@ -52,6 +75,7 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
 
         if (
             not mode_changed
+            and not stopwords_changed
             and indexed_document is not None
             and indexed_document[0] == fetched_at
         ):
@@ -81,6 +105,7 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
         stats["indexed"] += 1
 
     index.set_metadata("tokenizer_mode", mode)
+    index.set_metadata("stopwords_version", STOPWORDS_VERSION)
     return stats
 
 
@@ -92,7 +117,7 @@ def search_term(
         raise ValueError("查询需要 index_db")
 
     term = text_normalize(term)
-    if not term:
+    if not term or term in load_stopwords():
         return set()
 
     return set(storage.index.lookup_posting(term, storage.index.TITLE)) | set(
