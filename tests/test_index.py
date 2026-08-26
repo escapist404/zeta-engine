@@ -1,11 +1,35 @@
 import unittest
 from unittest.mock import patch
 
-from zeta_engine.index import build_index, search_phrase, search_query, search_term
+from zeta_engine.index import (
+    build_index,
+    load_stopwords,
+    search_phrase,
+    search_query,
+    search_term,
+    tokenize_with_positions,
+)
 from zeta_engine.storage import Storage
 
 
 class IndexTest(unittest.TestCase):
+    @patch(
+        "zeta_engine.index.jieba.tokenize",
+        return_value=[
+            ("人民大学", 0, 4),
+            (" ", 4, 5),
+            ("的", 5, 6),
+            ("招生", 6, 8),
+            ("。", 8, 9),
+        ],
+    )
+    def test_tokenizer_filters_stopwords_and_keeps_positions(self, _tokenize) -> None:
+        self.assertIn("的", load_stopwords())
+        self.assertEqual(
+            tokenize_with_positions("人民大学 的招生。"),
+            [("人民大学", 0), ("招生", 6)],
+        )
+
     def test_searches_terms_queries_and_phrases(self) -> None:
         with Storage(document_db=":memory:", index_db=":memory:") as storage:
             assert storage.documents is not None
@@ -52,6 +76,8 @@ class IndexTest(unittest.TestCase):
             ):
                 self.assertEqual(build_index(storage, "default")["indexed"], 1)
                 self.assertEqual(build_index(storage, "default")["skipped"], 1)
+                self.assertEqual(build_index(storage, "search")["indexed"], 1)
+                storage.index.set_metadata("stopwords_version", "outdated")
                 self.assertEqual(build_index(storage, "search")["indexed"], 1)
 
             self.assertEqual(
