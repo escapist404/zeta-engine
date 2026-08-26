@@ -1,32 +1,25 @@
 import logging
-import sqlite3
-from collections import deque
+import requests
+
 from datetime import datetime
 from queue import Queue
 from threading import Condition, Lock, Thread
 from time import monotonic, sleep
-from urllib.parse import urljoin, urlsplit
-
-import requests
+from urllib.parse import urldefrag, urljoin, urlsplit
+from collections import deque
 from bs4 import BeautifulSoup
 
 from zeta_engine.constants import HEADERS, TIMEOUT
-from zeta_engine.crawl_queue import (
-    claim_pending_tasks,
-    claim_task,
-    complete_task,
-    enqueue_tasks,
-    fail_task,
-    recover_tasks,
-    skip_template_tasks,
-    task_counts,
-)
-from zeta_engine.storage import Document, save_document
-from zeta_engine.utils import url_normalize
+from zeta_engine.storage import Storage
+from url_normalize import url_normalize
 
 
 logger = logging.getLogger(__name__)
 SKIPPED_PAGE = object()
+
+
+def normalize_url(url: str) -> str:
+    return urldefrag(url_normalize(url)).url
 
 
 def get_html(
@@ -52,10 +45,10 @@ def get_html(
         return None
 
 
-def extract_page(html: str, url: str) -> tuple[Document, list[str]]:
+def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[str]]:
     soup = BeautifulSoup(html, "html.parser")
     links = [
-        url_normalize(urljoin(url, tag["href"].strip()))
+        normalize_url(urljoin(url, tag["href"].strip()))
         for tag in soup.find_all("a", href=True)
         if tag["href"].strip()
     ]
@@ -64,18 +57,17 @@ def extract_page(html: str, url: str) -> tuple[Document, list[str]]:
         tag.decompose()
 
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    document = Document(
-        url=url,
-        title=title,
-        text=soup.get_text(" ", strip=True),
-        fetched_at=datetime.now().isoformat(),
+    document = (
+        url,
+        title,
+        soup.get_text(" ", strip=True),
+        datetime.now().isoformat(),
     )
     return document, links
 
 
 def crawl_urls(
-    document_connection: sqlite3.Connection,
-    queue_connection: sqlite3.Connection,
+    storage: Storage,
     seed_urls: list[str] | tuple[str, ...],
     allowed_domains: list[str] | tuple[str, ...] | None = None,
     *,
@@ -88,6 +80,7 @@ def crawl_urls(
         "scheduled": 0,
         "processed": 0,
         "saved": 0,
+        "skipped": 0,
         "retried": 0,
         "failed": 0,
     }
@@ -97,9 +90,14 @@ def crawl_urls(
         raise ValueError("download_workers 必须大于 0")
     if max_attempts <= 0:
         raise ValueError("max_attempts 必须大于 0")
+    if storage.documents is None or storage.queue is None:
+        raise ValueError("爬虫需要 document_db 和 queue_db")
+
+    documents = storage.documents
+    queue = storage.queue
 
     allowed_hosts = {
-        urlsplit(url_normalize(url)).hostname
+        urlsplit(normalize_url(url)).hostname
         for url in (allowed_domains or seed_urls)
     }
     allowed_hosts.discard(None)
@@ -132,7 +130,7 @@ def crawl_urls(
         nonlocal outstanding, scheduled_count
         accepted = []
         for url in urls:
-            normalized = url_normalize(url)
+            normalized = normalize_url(url)
             parts = urlsplit(normalized)
             if (
                 parts.scheme in {"http", "https"}
@@ -140,10 +138,10 @@ def crawl_urls(
             ):
                 accepted.append(normalized)
 
-        for url in enqueue_tasks(queue_connection, accepted):
+        for url in queue.enqueue(accepted):
             if scheduled_count >= max_pages:
                 break
-            if claim_task(queue_connection, url):
+            if queue.claim(url):
                 scheduled_count += 1
                 stats["scheduled"] = scheduled_count
                 outstanding += 1
@@ -176,22 +174,20 @@ def crawl_urls(
                     if url is not None:
                         processing_queue.put((url, None))
 
-    recovered = recover_tasks(queue_connection)
+    recovered = queue.recover()
     if recovered:
         logger.info("恢复 %s 个中断任务", recovered)
 
     schedule(list(seed_urls))
-    for url in claim_pending_tasks(
-        queue_connection,
-        max_pages - scheduled_count,
-    ):
+
+    for url in queue.claim_pending(max_pages - scheduled_count):
         scheduled_count += 1
         stats["scheduled"] = scheduled_count
         outstanding += 1
         push_request(url)
 
     if not scheduled_count:
-        logger.info("没有待爬任务: %s", task_counts(queue_connection))
+        logger.info("没有待爬任务: %s", queue.count_by_state())
         logger.info("本次统计: %s", stats)
         return stats
 
@@ -206,16 +202,13 @@ def crawl_urls(
 
     def retry_or_fail(url: str, error: str) -> None:
         nonlocal outstanding
-        state = fail_task(
-            queue_connection,
+        state = queue.fail(
             url,
             error,
             max_attempts,
         )
         if state == "pending":
-            # Mark the retry as processing before putting it back. This both
-            # increments attempts and lets startup recovery find interruptions.
-            claim_task(queue_connection, url)
+            queue.claim(url)
             push_request(url, priority=True)
             outstanding += 1
             stats["retried"] += 1
@@ -231,7 +224,7 @@ def crawl_urls(
                 outstanding -= 1
                 stats["processed"] += 1
                 if html is SKIPPED_PAGE:
-                    complete_task(queue_connection, url)
+                    queue.complete(url)
                     stats["skipped"] += 1
                     logger.info("页面已跳过: %s", url)
                     continue
@@ -241,9 +234,14 @@ def crawl_urls(
                     continue
 
                 document, links = extract_page(html, url)
-                document_id = save_document(document_connection, document)
+                document_id = documents.save(
+                    url=document[0],
+                    title=document[1],
+                    text=document[2],
+                    fetched_at=document[3],
+                )
                 schedule(links)
-                complete_task(queue_connection, url)
+                queue.complete(url)
                 stats["saved"] += 1
                 logger.info("页面已保存: id=%s url=%s", document_id, url)
             except Exception as error:
@@ -258,7 +256,7 @@ def crawl_urls(
                 if stats["processed"] % 100 == 0:
                     logger.info("爬取进度: %s", stats)
     except KeyboardInterrupt:
-        recovered = recover_tasks(queue_connection)
+        recovered = queue.recover()
         logger.info("爬取已中断，%s 个任务等待下次继续", recovered)
         raise
 
@@ -270,21 +268,19 @@ def crawl_urls(
     logger.info(
         "爬取结束: %s，队列状态: %s",
         stats,
-        task_counts(queue_connection),
+        queue.count_by_state(),
     )
     return stats
 
 
 def crawl_url(
-    document_connection: sqlite3.Connection,
-    queue_connection: sqlite3.Connection,
+    storage: Storage,
     seed_url: str,
     allowed_domains: list[str] | tuple[str, ...] | None = None,
     **options,
 ) -> dict[str, int]:
     return crawl_urls(
-        document_connection,
-        queue_connection,
+        storage,
         [seed_url],
         allowed_domains=allowed_domains,
         **options,
