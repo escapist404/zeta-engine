@@ -117,7 +117,9 @@ def run_search(args: argparse.Namespace) -> int:
         elif args.ranking == "tf-idf":
             document_ids = search_tf_idf(storage, args.query)
         elif args.ranking == "bm25f":
-            document_ids = search_bm25f(storage, args.query)
+            # not implemented yet
+            # document_ids = search_bm25f(storage, args.query)
+            ...
         else:
             document_ids = search_query(storage, args.query)
         for rank, document_id in enumerate(document_ids[:args.limit], start=1):
@@ -126,7 +128,7 @@ def run_search(args: argparse.Namespace) -> int:
                 continue
             url, title, text, _fetched_at = document
             snippet = " ".join(text.split())[:160]
-            print(f"{rank}. {title}\n   {url}\n   {snippet}")
+            print(f"{rank}. {title}\n   {url}\n   {snippet}\n")
 
     return 0
 
