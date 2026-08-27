@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from zeta_engine.crawler import SKIPPED_PAGE, crawl_urls, extract_page
+from zeta_engine.crawler import SKIPPED_PAGE, crawl_urls, extract_page, get_html
 from zeta_engine.storage import Storage
 
 
@@ -57,7 +57,45 @@ class CrawlerTest(unittest.TestCase):
                     ],
                 )
 
-    @patch("zeta_engine.crawler.get_html", side_effect=lambda url, **_: PAGES[url])
+    def test_extract_page_prefers_content_title_and_semantic_body(self) -> None:
+        html = """
+            <html>
+            <head>
+                <title>学院新闻 - 中国人民大学</title>
+                <meta property="og:title" content="社交分享标题">
+            </head>
+            <body>
+                <header>站点导航</header>
+                <main>
+                    <h1>真正的文章标题</h1>
+                    <p>文章正文</p>
+                </main>
+                <footer>版权信息</footer>
+            </body>
+            </html>
+        """
+
+        document, _links = extract_page(html, "https://a.test/article")
+
+        self.assertEqual(document[1], "真正的文章标题")
+        self.assertEqual(document[2], "真正的文章标题 文章正文")
+
+    def test_extract_page_uses_social_title_before_html_title(self) -> None:
+        html = """
+            <html><head>
+                <title>网站首页</title>
+                <meta property="og:title" content="具体内容标题">
+            </head><body><p>正文</p></body></html>
+        """
+
+        document, _links = extract_page(html, "https://a.test/article")
+
+        self.assertEqual(document[1], "具体内容标题")
+
+    @patch(
+        "zeta_engine.crawler.get_html",
+        side_effect=lambda url, *_args, **_kwargs: (url, PAGES[url]),
+    )
     def test_two_queues_crawl_and_save_discovered_pages(self, _get_html) -> None:
         with Storage(
             document_db=":memory:",
@@ -82,7 +120,10 @@ class CrawlerTest(unittest.TestCase):
             self.assertEqual(stats["processed"], 3)
             self.assertEqual(stats["saved"], 3)
 
-    @patch("zeta_engine.crawler.get_html", side_effect=lambda url, **_: PAGES[url])
+    @patch(
+        "zeta_engine.crawler.get_html",
+        side_effect=lambda url, *_args, **_kwargs: (url, PAGES[url]),
+    )
     def test_restart_continues_pending_tasks(self, get_html) -> None:
         with Storage(
             document_db=":memory:",
@@ -120,7 +161,10 @@ class CrawlerTest(unittest.TestCase):
         "zeta_engine.crawler.get_html",
         side_effect=[
             None,
-            "<html><title>A</title><body>正文</body></html>",
+            (
+                "https://a.test/",
+                "<html><title>A</title><body>正文</body></html>",
+            ),
         ],
     )
     def test_failed_page_is_retried_and_counted(self, _get_html) -> None:
@@ -161,6 +205,75 @@ class CrawlerTest(unittest.TestCase):
             self.assertEqual(stats["skipped"], 1)
             self.assertEqual(stats["retried"], 0)
             self.assertEqual(storage.queue.count_by_state(), {"done": 1})
+
+    def test_get_html_checks_only_the_final_host(self) -> None:
+        allowed_response = Mock(
+            url="https://a.test/final",
+            headers={"Content-Type": "text/html"},
+            apparent_encoding="utf-8",
+            text="<html><body>正文</body></html>",
+        )
+        allowed_session = Mock()
+        allowed_session.get.return_value = allowed_response
+
+        self.assertEqual(
+            get_html(
+                "https://outside.test/start",
+                {"a.test"},
+                session=allowed_session,
+            ),
+            (
+                "https://a.test/final",
+                "<html><body>正文</body></html>",
+            ),
+        )
+
+        blocked_response = Mock(
+            url="https://outside.test/final",
+            headers={"Content-Type": "text/html"},
+        )
+        blocked_session = Mock()
+        blocked_session.get.return_value = blocked_response
+
+        self.assertIs(
+            get_html(
+                "https://a.test/start",
+                {"a.test"},
+                session=blocked_session,
+            ),
+            SKIPPED_PAGE,
+        )
+
+    @patch(
+        "zeta_engine.crawler.get_html",
+        return_value=(
+            "https://a.test/final",
+            "<html><title>A</title><body>正文</body></html>",
+        ),
+    )
+    def test_crawl_saves_an_allowed_final_url_from_an_external_start(
+        self,
+        _get_html,
+    ) -> None:
+        with Storage(
+            document_db=":memory:",
+            queue_db=":memory:",
+        ) as storage:
+            stats = crawl_urls(
+                storage,
+                ["https://outside.test/start"],
+                allowed_domains=["https://a.test/"],
+                max_pages=1,
+                download_workers=1,
+                per_host_delay=0,
+            )
+
+            assert storage.documents is not None
+            self.assertEqual(
+                [row[1] for row in storage.documents.iter_all()],
+                ["https://a.test/final"],
+            )
+            self.assertEqual(stats["saved"], 1)
 
 
 if __name__ == "__main__":

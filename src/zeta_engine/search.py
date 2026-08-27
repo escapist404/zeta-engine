@@ -152,7 +152,7 @@ def search_tf_idf(
     idfs = {}
     for term, (title_posting, text_posting) in postings.items():
         df = len(set(title_posting) | set(text_posting))
-        idfs[term] = log((document_count + 1) / (df + 1)) if df else 0.0
+        idfs[term] = log((document_count + 1) / (df + 1)) + 1.
     query_weights = {
         term: (1 + log(query_tf[term])) * idfs[term]
         for term in terms
@@ -165,17 +165,20 @@ def search_tf_idf(
     def document_weight(document_id: int, term: str) -> float:
         title_posting, text_posting = postings[term]
         tf = (
-            10 * len(title_posting.get(document_id, ()))
+            len(title_posting.get(document_id, ()))
             + len(text_posting.get(document_id, ()))
         )
-        return (1 + log(tf)) * idfs[term] if tf else 0.0
+        return (1 + log(tf)) * idfs[term] if tf else 0.
+
+    selected_tf_idf_norm = storage.index.get_tf_idf_norm(matches)
 
     scores = {
         document_id: sum(
             document_weight(document_id, term) * query_weights[term]
             for term in terms
-        )
+        ) / selected_tf_idf_norm[document_id]
         for document_id in matches
+        if selected_tf_idf_norm.get(document_id, 0.) > 0.
     }
 
     return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
@@ -184,4 +187,22 @@ def search_bm25f(
         storage: Storage,
         query: str,
 ) -> list[int]:
+    if storage.index is None:
+        raise ValueError("查询需要 index_db")
+
+    query = text_normalize(query)
+    if not query:
+        return []
+
+    mode = storage.index.get_metadata("tokenizer_mode") or "default"
+    query_terms = [
+        term
+        for term, _ in tokenize_with_positions(query, mode)
+        if term.strip()
+    ]
+
+    if not query_terms:
+        return []
+
+    terms = list(dict.fromkeys(query_terms))
     ...

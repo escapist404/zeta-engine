@@ -321,7 +321,7 @@ class _Queue:
 class _Index:
     """管理用于检索的文档快照、索引元数据、词典和倒排记录。
 
-    indexed_documents 保存每篇文档的归一化字段、token 数和抓取时间；
+    indexed_documents 保存每篇文档的归一化字段、token 数、TF-IDF 向量范数、抓取时间；
     index_metadata 保存分词模式等索引级配置；terms 保存词项及文档频率；
     postings 保存词项在每篇文档、每个字段中的出现位置。
     """
@@ -342,6 +342,7 @@ class _Index:
                 text_norm TEXT NOT NULL,
                 title_len INTEGER NOT NULL,
                 text_len INTEGER NOT NULL,
+                tf_idf_norm REAL NOT NULL DEFAULT 0,
                 fetched_at TEXT NOT NULL
             );
 
@@ -485,6 +486,39 @@ class _Index:
                 ),
             )
 
+    def set_tf_idf_norm(self, norms: dict[int, float]) -> None:
+        self._connection.execute(
+            "UPDATE indexed_documents SET tf_idf_norm = 0"
+        )
+        self._connection.executemany(
+            """
+            UPDATE indexed_documents
+            SET tf_idf_norm = ?
+            WHERE document_id = ?
+            """,
+            (
+                (norm, document_id)
+                for document_id, norm in norms.items()
+            ),
+        )
+        self._connection.commit()
+
+    def get_tf_idf_norm(self, document_ids: set[int]) -> dict[int, float]:
+        if not document_ids:
+            return {}
+
+        placeholders = ", ".join("?" for _ in document_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT document_id, tf_idf_norm
+            FROM indexed_documents
+            WHERE document_id IN ({placeholders})
+            """,
+            tuple(document_ids),
+        ).fetchall()
+
+        return dict(rows)
+
     def lookup_posting(
         self,
         term: str,
@@ -526,12 +560,39 @@ class _Index:
             (document_id,),
         ).fetchone()
 
+    def iter_all_documents(self) -> Iterator:
+        """返回按照 id 排序的文章迭代器。"""
+
+        return iter(
+            self._connection.execute(
+                """
+                SELECT document_id, title_norm, text_norm, title_len, text_len, tf_idf_norm, fetched_at
+                FROM indexed_documents
+                ORDER BY document_id
+                """
+            )
+        )
+
     def count_documents(self) -> int:
         """返回当前文档数量。"""
 
         return self._connection.execute(
             "SELECT COUNT(*) FROM indexed_documents"
         ).fetchone()[0]
+
+    def iter_all_terms(self) -> Iterator:
+        """返回包含单词和文章词频的迭代器。"""
+
+        return iter(
+            self._connection.execute(
+                """
+                SELECT id, term, document_frequency
+                FROM terms
+                WHERE document_frequency > 0
+                ORDER BY id
+                """
+            )
+        )
 
     def count_terms(self) -> int:
         """返回当前至少出现在一篇文档中的词项数量。"""

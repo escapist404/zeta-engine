@@ -1,18 +1,17 @@
 import logging
-import requests
-
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timezone
 from queue import Queue
 from threading import Condition, Lock, Thread
 from time import monotonic, sleep
 from urllib.parse import urldefrag, urljoin, urlsplit
-from collections import deque
+
+import requests
 from bs4 import BeautifulSoup
+from url_normalize import url_normalize
 
 from zeta_engine.constants import HEADERS, TIMEOUT
 from zeta_engine.storage import Storage
-from url_normalize import url_normalize
-
 
 logger = logging.getLogger(__name__)
 SKIPPED_PAGE = object()
@@ -24,13 +23,19 @@ def normalize_url(url: str) -> str:
 
 def get_html(
     url: str,
+    allowed_hosts: set[str],
     headers: dict = HEADERS,
     timeout: int = TIMEOUT,
     session: requests.Session | None = None,
-) -> str | None | object:
+) -> tuple[str, str] | None | object:
     try:
         client = session or requests
         response = client.get(url=url, headers=headers, timeout=timeout)
+        final_url = normalize_url(response.url)
+        if urlsplit(final_url).hostname not in allowed_hosts:
+            logger.info("跳过域名范围外的最终页面: %s", final_url)
+            return SKIPPED_PAGE
+
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "").lower()
@@ -39,7 +44,7 @@ def get_html(
             return SKIPPED_PAGE
 
         response.encoding = response.apparent_encoding
-        return response.text
+        return final_url, response.text
     except requests.RequestException as error:
         logger.warning("获取页面失败: %s (%s)", url, error)
         return None
@@ -53,11 +58,32 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         if tag["href"].strip()
     ]
 
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    headline = (
+        soup.select_one("#articleDiv h1, #articleDiv [itemprop='headline']")
+        or soup.select_one("article h1, article [itemprop='headline']")
+        or soup.select_one("main h1, main [itemprop='headline']")
+        or soup.select_one("[role='main'] h1, [role='main'] [itemprop='headline']")
+        or soup.select_one(
+            ".article-title, .article_title, .articleTitle, "
+            ".news-title, .news_title, .newsTitle"
+        )
+    )
+    social_title = soup.select_one(
+        "meta[property='og:title'][content], meta[name='twitter:title'][content]"
+    )
+    title = (
+        headline.get_text(" ", strip=True)
+        if headline
+        else social_title["content"].strip()
+        if social_title
+        else soup.title.get_text(" ", strip=True)
+        if soup.title
+        else ""
+    )
 
     for tag in soup.select(
-        "script, style, noscript, template, nav, aside, [hidden], "
-        "[aria-hidden='true'], header.main-header, #search_warp, "
+        "script, style, noscript, template, nav, aside, header, footer, "
+        "[hidden], [aria-hidden='true'], #search_warp, "
         ".stricky-header, .page_content > .fl, .crumbs, .page_nav, "
         ".footer, .point_out, .mobile-nav__wrapper"
     ):
@@ -65,6 +91,9 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
 
     content = (
         soup.select_one("#articleDiv")
+        or soup.select_one("article")
+        or soup.select_one("main")
+        or soup.select_one("[role='main']")
         or soup.select_one(".notice_list")
         or soup.body
         or soup
@@ -73,7 +102,7 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         url,
         title,
         content.get_text(" ", strip=True),
-        datetime.now().isoformat(),
+        datetime.now(timezone.utc).isoformat(),
     )
     return document, links
 
@@ -116,7 +145,9 @@ def crawl_urls(
 
     request_queue: deque[str | None] = deque()
     request_condition = Condition()
-    processing_queue: Queue[tuple[str, str | None | object]] = Queue(
+    processing_queue: Queue[
+        tuple[str, tuple[str, str] | None | object]
+    ] = Queue(
         maxsize=download_workers * 2
     )
     host_next_request: dict[str, float] = {}
@@ -144,10 +175,7 @@ def crawl_urls(
         for url in urls:
             normalized = normalize_url(url)
             parts = urlsplit(normalized)
-            if (
-                parts.scheme in {"http", "https"}
-                and parts.hostname in allowed_hosts
-            ):
+            if parts.scheme in {"http", "https"}:
                 accepted.append(normalized)
 
         for url in queue.enqueue(accepted):
@@ -179,7 +207,14 @@ def crawl_urls(
 
                     wait_for_host(url)
                     processing_queue.put(
-                        (url, get_html(url, session=session))
+                        (
+                            url,
+                            get_html(
+                                url,
+                                allowed_hosts,
+                                session=session,
+                            ),
+                        )
                     )
                 except Exception as error:
                     logger.warning("下载页面失败: %s (%s)", url, error)
@@ -231,21 +266,22 @@ def crawl_urls(
 
     try:
         while outstanding:
-            url, html = processing_queue.get()
+            url, result = processing_queue.get()
             try:
                 outstanding -= 1
                 stats["processed"] += 1
-                if html is SKIPPED_PAGE:
+                if result is SKIPPED_PAGE:
                     queue.complete(url)
                     stats["skipped"] += 1
                     logger.info("页面已跳过: %s", url)
                     continue
 
-                if html is None:
+                if result is None:
                     retry_or_fail(url, "获取页面失败")
                     continue
 
-                document, links = extract_page(html, url)
+                final_url, html = result
+                document, links = extract_page(html, final_url)
                 document_id = documents.save(
                     url=document[0],
                     title=document[1],
@@ -255,7 +291,11 @@ def crawl_urls(
                 schedule(links)
                 queue.complete(url)
                 stats["saved"] += 1
-                logger.info("页面已保存: id=%s url=%s", document_id, url)
+                logger.info(
+                    "页面已保存: id=%s url=%s",
+                    document_id,
+                    final_url,
+                )
             except Exception as error:
                 retry_or_fail(url, str(error))
                 logger.warning(
