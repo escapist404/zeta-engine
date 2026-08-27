@@ -1,3 +1,5 @@
+from pathlib import Path
+
 SEED_URLS = (
     "http://pd.ruc.edu.cn/",
     "http://sph.ruc.edu.cn/",
@@ -39,3 +41,7 @@ HEADERS = {
 }
 
 TIMEOUT = 30
+
+# Union of the four lists from https://github.com/goto456/stopwords
+STOPWORDS_PATH = Path(__file__).with_name("stopwords.txt")
+STOPWORDS_VERSION = "goto456-bf8b03b9-union"

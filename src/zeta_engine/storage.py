@@ -1,9 +1,9 @@
 import json
 import sqlite3
-
-from typing import Iterator
-from pathlib import Path
+from collections.abc import Iterator
 from contextlib import ExitStack, closing
+from pathlib import Path
+
 
 class Storage:
     def __init__(
@@ -293,6 +293,8 @@ class _Index:
                 document_id INTEGER PRIMARY KEY,
                 title_norm TEXT NOT NULL,
                 text_norm TEXT NOT NULL,
+                title_len INTEGER NOT NULL,
+                text_len INTEGER NOT NULL,
                 fetched_at TEXT NOT NULL
             );
 
@@ -348,24 +350,42 @@ class _Index:
                 (document_id,),
             )
 
+            title_len = sum(
+                len(positions)
+                for (_, field), positions in postings.items()
+                if field == self.TITLE
+            )
+
+            text_len = sum(
+                len(positions)
+                for (_, field), positions in postings.items()
+                if field == self.TEXT
+            )
+
             self._connection.execute(
                 """
                 INSERT INTO indexed_documents (
                     document_id,
                     title_norm,
                     text_norm,
+                    title_len,
+                    text_len,
                     fetched_at
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     title_norm = excluded.title_norm,
                     text_norm = excluded.text_norm,
+                    title_len = excluded.title_len,
+                    text_len = excluded.text_len,
                     fetched_at = excluded.fetched_at
                 """,
                 (
                     document_id,
                     title_norm,
                     text_norm,
+                    title_len,
+                    text_len,
                     fetched_at,
                 ),
             )
@@ -440,7 +460,7 @@ class _Index:
             for document_id, positions in rows
         }
 
-    def get_indexed_document(
+    def get_document_by_index(
         self,
         document_id: int,
     ) -> tuple[str, str, str] | None:
@@ -456,6 +476,16 @@ class _Index:
     def count_terms(self) -> int:
         return self._connection.execute(
             "SELECT COUNT(*) FROM terms WHERE document_frequency > 0"
+        ).fetchone()[0]
+
+    def get_total_len_by_field(self, field: int) -> int:
+        column = {
+            self.TITLE: "title_len",
+            self.TEXT: "text_len",
+        }[field]
+
+        return self._connection.execute(
+            f"SELECT COALESCE(SUM({column}), 0) FROM indexed_documents"
         ).fetchone()[0]
 
     def get_metadata(self, key: str) -> str | None:

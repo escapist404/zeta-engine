@@ -5,8 +5,10 @@ from urllib.parse import urlsplit
 
 from zeta_engine.constants import ALLOWED_DOMAINS, SEED_URLS
 from zeta_engine.crawler import crawl_urls
-from zeta_engine.index import build_index, search_query
+from zeta_engine.index import build_index
+from zeta_engine.search import search_query
 from zeta_engine.storage import Storage
+
 
 def configure_logging(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)

@@ -40,7 +40,7 @@ class StorageTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                storage.index.get_indexed_document(1),
+                storage.index.get_document_by_index(1),
                 (
                     "2026-08-26T10:00:00",
                     "中国人民大学",
