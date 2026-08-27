@@ -82,13 +82,19 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
     )
 
     for tag in soup.select(
-        "script, style, noscript, template, nav, aside, header, footer, "
+        "script, style, noscript, template, nav, aside, header, footer, bottom, "
         "[hidden], [aria-hidden='true'], #search_warp, "
         ".stricky-header, .page_content > .fl, .crumbs, .page_nav, "
         ".footer, .point_out, .mobile-nav__wrapper, "
         "section.btm_bar, body.div > section.mn-sec.full_wdth_single_video > div > div.row > div > div > div > div > div, "
         "body > div.header.__web-inspector-hide-shortcut__, body > div.footer, body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fr > div.crumbs, "
-        "body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fl"
+        "body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fl, "
+        "#top > div.header, #top > div.top_menu_box, "
+        "#footer, #main > div.left_menu, #main > div.content > div.navigation, #main > div.content > div.activity_detail > div.extra_info, "
+        "body > div.content > div > div.leftNav, body > div.content > div > div.rightCon > div.crumbs, "
+        "body > header, #top > div.top_menu_box, #app > header, body > div.top.wow.fadeIn, "
+        "body > div.header.wow.fadeIn, body > div.m3pos.wow.fadeIn, body > div.container > div > div.m3nRx, body > div.container > div > div.m3nLx > form > div.m3n_tm, "
+        "body > div.footer.wow.fadeIn, body > div.container > div > div.m3nLx > form > div.m3nShare.bdsharebuttonbox.wow.fadeIn.bdshare-button-style0-24"
     ):
         tag.decompose()
 
@@ -105,7 +111,7 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         url,
         title,
         content.get_text(" ", strip=True),
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(timezone.UTC).isoformat(),
     )
     return document, links
 

@@ -160,7 +160,7 @@ def search_tf_idf(
 
     matches = set(postings[terms[0]][0]) | set(postings[terms[0]][1])
     for title_posting, text_posting in postings.values():
-        matches &= set(title_posting) | set(text_posting)
+        matches |= set(title_posting) | set(text_posting)
 
     def document_weight(document_id: int, term: str) -> float:
         title_posting, text_posting = postings[term]
@@ -206,4 +206,4 @@ def search_bm25f(
         return []
 
     terms = list(dict.fromkeys(query_terms))
-    ...
+    

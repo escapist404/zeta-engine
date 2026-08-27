@@ -573,6 +573,9 @@ class _Index:
             )
         )
 
+    def get_total_len(self) -> tuple[int, int]:
+        return self._connection.execute("SELECT SUM(title_len), SUM(text_len) FROM indexed_documents").fetchone()
+
     def count_documents(self) -> int:
         """返回当前文档数量。"""
 
