@@ -183,6 +183,7 @@ def search_tf_idf(
 
     return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
 
+
 def search_bm25f(
         storage: Storage,
         query: str,

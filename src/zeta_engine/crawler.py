@@ -85,7 +85,10 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         "script, style, noscript, template, nav, aside, header, footer, "
         "[hidden], [aria-hidden='true'], #search_warp, "
         ".stricky-header, .page_content > .fl, .crumbs, .page_nav, "
-        ".footer, .point_out, .mobile-nav__wrapper"
+        ".footer, .point_out, .mobile-nav__wrapper, "
+        "section.btm_bar, body.div > section.mn-sec.full_wdth_single_video > div > div.row > div > div > div > div > div, "
+        "body > div.header.__web-inspector-hide-shortcut__, body > div.footer, body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fr > div.crumbs, "
+        "body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fl"
     ):
         tag.decompose()
 
