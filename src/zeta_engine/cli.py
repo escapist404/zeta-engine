@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from zeta_engine.constants import ALLOWED_DOMAINS, SEED_URLS
 from zeta_engine.crawler import crawl_urls
 from zeta_engine.index import build_index
-from zeta_engine.search import search_query
+from zeta_engine.search import search_bm25f, search_query, search_tf_idf
 from zeta_engine.storage import Storage
 
 
@@ -112,7 +112,14 @@ def run_search(args: argparse.Namespace) -> int:
         document_db=args.document_db,
         index_db=args.index_db,
     ) as storage:
-        document_ids = search_query(storage, args.query, phrase=args.phrase)
+        if args.phrase:
+            document_ids = search_query(storage, args.query, phrase=True)
+        elif args.ranking == "tf-idf":
+            document_ids = search_tf_idf(storage, args.query)
+        elif args.ranking == "bm25f":
+            document_ids = search_bm25f(storage, args.query)
+        else:
+            document_ids = search_query(storage, args.query)
         for rank, document_id in enumerate(document_ids[:args.limit], start=1):
             document = storage.documents.get(document_id)
             if document is None:
@@ -201,6 +208,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/index.db"),
     )
     search.add_argument("--phrase", action="store_true", help="精确短语查询")
+    search.add_argument(
+        "--ranking",
+        choices=("simple", "tf-idf", "bm25f"),
+        default="simple",
+        help="普通查询的排名算法",
+    )
     search.add_argument("--limit", type=int, default=10)
     search.set_defaults(handler=run_search)
 

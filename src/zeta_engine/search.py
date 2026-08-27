@@ -1,3 +1,6 @@
+from collections import Counter
+from math import log
+
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
     load_stopwords,
@@ -124,13 +127,58 @@ def search_tf_idf(
         return []
 
     mode = storage.index.get_metadata("tokenizer_mode") or "default"
-    terms = list(dict.fromkeys(
-        term for term, _position in tokenize_with_positions(query, mode)
+    query_terms = [
+        term
+        for term, _ in tokenize_with_positions(query, mode)
         if term.strip()
-    ))
-    if not terms:
+    ]
+
+    if not query_terms:
         return []
-    
+
+    terms = list(dict.fromkeys(query_terms))
+
+    document_count = storage.index.count_documents()
+    query_tf = Counter(query_terms)
+
+    postings = {
+        term: (
+            storage.index.lookup_posting(term, storage.index.TITLE),
+            storage.index.lookup_posting(term, storage.index.TEXT),
+        )
+        for term in terms
+    }
+
+    idfs = {}
+    for term, (title_posting, text_posting) in postings.items():
+        df = len(set(title_posting) | set(text_posting))
+        idfs[term] = log((document_count + 1) / (df + 1)) if df else 0.0
+    query_weights = {
+        term: (1 + log(query_tf[term])) * idfs[term]
+        for term in terms
+    }
+
+    matches = set(postings[terms[0]][0]) | set(postings[terms[0]][1])
+    for title_posting, text_posting in postings.values():
+        matches &= set(title_posting) | set(text_posting)
+
+    def document_weight(document_id: int, term: str) -> float:
+        title_posting, text_posting = postings[term]
+        tf = (
+            10 * len(title_posting.get(document_id, ()))
+            + len(text_posting.get(document_id, ()))
+        )
+        return (1 + log(tf)) * idfs[term] if tf else 0.0
+
+    scores = {
+        document_id: sum(
+            document_weight(document_id, term) * query_weights[term]
+            for term in terms
+        )
+        for document_id in matches
+    }
+
+    return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
 
 def search_bm25f(
         storage: Storage,

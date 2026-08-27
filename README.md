@@ -52,9 +52,11 @@ uv run zeta-engine index --mode search --log-file logs/zeta-engine.log
 ```bash
 uv run zeta-engine search "中国人民大学"
 uv run zeta-engine search "中国人民大学" --phrase --limit 20
+uv run zeta-engine search "中国人民大学" --ranking tf-idf
+uv run zeta-engine search "中国人民大学" --ranking bm25f
 ```
 
-普通查询会分词并要求所有词都命中，标题命中的结果优先；`--phrase` 要求词和位置连续匹配。
+普通查询会分词并要求所有词都命中；`--ranking` 可选 `simple`、`tf-idf` 或 `bm25f`，默认为 `simple`。`--phrase` 要求词和位置连续匹配。
 
 ### 统计
 

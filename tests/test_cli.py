@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from zeta_engine.cli import build_parser
 from zeta_engine.storage import Storage
@@ -55,10 +55,24 @@ class CliTest(unittest.TestCase):
                 "--document-db", str(document_db),
                 "--index-db", str(index_db),
             ])
+            self.assertEqual(search_args.ranking, "simple")
             output = io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(search_args.handler(search_args), 0)
             self.assertIn("https://info.ruc.edu.cn/example", output.getvalue())
+
+            tf_idf_args = parser.parse_args([
+                "search", "中国人民大学",
+                "--document-db", str(document_db),
+                "--index-db", str(index_db),
+                "--ranking", "tf-idf",
+            ])
+            with patch(
+                "zeta_engine.cli.search_tf_idf",
+                return_value=[],
+            ) as search_tf_idf:
+                self.assertEqual(tf_idf_args.handler(tf_idf_args), 0)
+            search_tf_idf.assert_called_once_with(ANY, "中国人民大学")
 
 
 if __name__ == "__main__":

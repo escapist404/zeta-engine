@@ -1,20 +1,20 @@
 import unittest
 from unittest.mock import patch
 
-from zeta_engine.index import (
-    build_index,
-    load_stopwords,
+from zeta_engine.index import build_index
+from zeta_engine.search import (
     search_phrase,
     search_query,
     search_term,
-    tokenize_with_positions,
+    search_tf_idf,
 )
 from zeta_engine.storage import Storage
+from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
 
 
 class IndexTest(unittest.TestCase):
     @patch(
-        "zeta_engine.index.jieba.tokenize",
+        "zeta_engine.tokenizer.jieba.tokenize",
         return_value=[
             ("人民大学", 0, 4),
             (" ", 4, 5),
@@ -46,13 +46,14 @@ class IndexTest(unittest.TestCase):
                 fetched_at="2026-08-26T10:00:00",
             )
 
-            with patch(
-                "zeta_engine.index.tokenize_with_positions",
-                side_effect=lambda text, _mode: [
-                    (term, text.index(term))
-                    for term in ("人民", "大学", "招生", "欢迎", "报考", "你")
-                    if term in text
-                ],
+            tokenize = lambda text, _mode: [
+                (term, text.index(term))
+                for term in ("人民", "大学", "招生", "欢迎", "报考", "你")
+                if term in text
+            ]
+            with (
+                patch("zeta_engine.index.tokenize_with_positions", side_effect=tokenize),
+                patch("zeta_engine.search.tokenize_with_positions", side_effect=tokenize),
             ):
                 build_index(storage)
                 self.assertEqual(search_term(storage, "人民"), {1, 2})
@@ -85,6 +86,33 @@ class IndexTest(unittest.TestCase):
                 {1: [0]},
             )
             self.assertEqual(storage.index.count_terms(), 1)
+
+    def test_tf_idf_ranks_by_weight_without_cosine_normalization(self) -> None:
+        with Storage(document_db=":memory:", index_db=":memory:") as storage:
+            assert storage.documents is not None
+            for url, title in (
+                ("https://example.test/low", "common x"),
+                ("https://example.test/high", "common x x x"),
+                ("https://example.test/other", "common y"),
+            ):
+                storage.documents.save(
+                    url=url,
+                    title=title,
+                    text="",
+                    fetched_at="2026-08-26T10:00:00",
+                )
+
+            tokenize = lambda text, _mode: [
+                (term, position)
+                for position, term in enumerate(text.split())
+            ]
+            with (
+                patch("zeta_engine.index.tokenize_with_positions", side_effect=tokenize),
+                patch("zeta_engine.search.tokenize_with_positions", side_effect=tokenize),
+            ):
+                build_index(storage)
+                self.assertEqual(search_tf_idf(storage, "x"), [2, 1])
+                self.assertEqual(search_tf_idf(storage, "common"), [1, 2, 3])
 
     def test_logs_progress_every_100_documents(self) -> None:
         with Storage(document_db=":memory:", index_db=":memory:") as storage:

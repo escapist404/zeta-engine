@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 class Storage:
+    """按需打开并统一管理文档、爬取队列和索引数据库。"""
+
     def __init__(
         self,
         *,
@@ -26,6 +28,8 @@ class Storage:
         self.index: _Index | None = None
 
     def __enter__(self) -> "Storage":
+        """打开已配置的数据库并初始化相应的数据表。"""
+
         if self._stack is not None:
             raise RuntimeError("Storage 已经打开")
 
@@ -60,6 +64,8 @@ class Storage:
             raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        """关闭当前 Storage 管理的全部数据库连接。"""
+
         if self._stack is None:
             return
 
@@ -71,6 +77,8 @@ class Storage:
         stack.__exit__(exc_type, exc, tb)
 
     def _open(self, path: Path) -> sqlite3.Connection:
+        """打开 SQLite 数据库，并把连接交给当前上下文统一关闭。"""
+
         if self._stack is None:
             raise RuntimeError("Storage 尚未打开")
 
@@ -83,10 +91,14 @@ class Storage:
 
 
 class _Document:
+    """管理原始网页文档；documents 每行对应一个 URL 的最新抓取结果。"""
+
     def __init__(self, connection: sqlite3.Connection):
         self._connection = connection
 
     def initialize(self) -> None:
+        """创建文档表。"""
+
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
@@ -108,6 +120,8 @@ class _Document:
         text: str,
         fetched_at: str,
     ) -> int:
+        """新增或更新 URL 对应的文档，并返回稳定的文档 ID。"""
+
         row = self._connection.execute(
             """
             INSERT INTO documents (url, title, text, fetched_at)
@@ -130,6 +144,8 @@ class _Document:
         return row[0]
 
     def get(self, document_id: int) -> tuple[str, str, str, str] | None:
+        """按文档 ID 返回 URL、标题、正文和抓取时间。"""
+
         row = self._connection.execute(
             """
             SELECT url, title, text, fetched_at
@@ -141,6 +157,8 @@ class _Document:
         return row
 
     def iter_all(self) -> Iterator[tuple[int, str, str, str, str]]:
+        """按文档 ID 顺序遍历所有原始文档。"""
+
         return iter(self._connection.execute(
             """
             SELECT id, url, title, text, fetched_at
@@ -150,6 +168,8 @@ class _Document:
         ))
 
     def count_by_host(self, host: str) -> int:
+        """统计指定主机下已保存的文档数量。"""
+
         return self._connection.execute(
             """
             SELECT COUNT(*)
@@ -161,10 +181,14 @@ class _Document:
 
 
 class _Queue:
+    """管理爬取任务；crawl_tasks 保存 URL 的状态、尝试次数和最近错误。"""
+
     def __init__(self, connection: sqlite3.Connection):
         self._connection = connection
 
     def initialize(self):
+        """创建爬取任务表及其状态索引。"""
+
         self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS crawl_tasks (
@@ -182,6 +206,8 @@ class _Queue:
         self._connection.commit()
 
     def enqueue(self, urls: list[str] | tuple[str, ...], ) -> list[str]:
+        """加入尚不存在的 URL，并返回实际新增的 URL。"""
+
         added = []
         for url in urls:
             cursor = self._connection.execute(
@@ -195,6 +221,8 @@ class _Queue:
         return added
 
     def recover(self) -> int:
+        """将上次中断时仍在处理的任务恢复为待处理，并返回恢复数量。"""
+
         cursor = self._connection.execute(
             """
             UPDATE crawl_tasks
@@ -206,6 +234,8 @@ class _Queue:
         return cursor.rowcount
 
     def claim_pending(self, limit: int) -> list[str]:
+        """按入队顺序领取最多 limit 个待处理任务。"""
+
         rows = self._connection.execute(
             """
             SELECT url
@@ -230,6 +260,8 @@ class _Queue:
         return urls
 
     def claim(self, url: str) -> bool:
+        """尝试领取指定 URL；仅当它原本处于待处理状态时成功。"""
+
         cursor = self._connection.execute(
             """
             UPDATE crawl_tasks
@@ -242,6 +274,8 @@ class _Queue:
         return cursor.rowcount == 1
 
     def complete(self, url: str):
+        """将指定任务标记为完成并清除最近错误。"""
+
         self._connection.execute(
             """
             UPDATE crawl_tasks
@@ -253,6 +287,8 @@ class _Queue:
         self._connection.commit()
 
     def fail(self, url: str, error: str, max_attempts: int) -> str:
+        """记录失败；未达尝试上限则重试，否则永久失败，并返回新状态。"""
+
         self._connection.execute(
             """
             UPDATE crawl_tasks
@@ -273,6 +309,8 @@ class _Queue:
         return state
 
     def count_by_state(self) -> dict[str, int]:
+        """返回各任务状态对应的任务数量。"""
+
         return dict(
             self._connection.execute(
                 "SELECT state, COUNT(*) FROM crawl_tasks GROUP BY state"
@@ -281,12 +319,21 @@ class _Queue:
 
 
 class _Index:
+    """管理用于检索的文档快照、索引元数据、词典和倒排记录。
+
+    indexed_documents 保存每篇文档的归一化字段、token 数和抓取时间；
+    index_metadata 保存分词模式等索引级配置；terms 保存词项及文档频率；
+    postings 保存词项在每篇文档、每个字段中的出现位置。
+    """
+
     TITLE, TEXT = 0, 1
 
     def __init__(self, connection: sqlite3.Connection):
         self._connection = connection
 
     def initialize(self) -> None:
+        """创建索引所需的数据表和辅助索引。"""
+
         self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS indexed_documents (
@@ -332,6 +379,8 @@ class _Index:
         text_norm: str,
         postings: dict[tuple[str, int], list[int]],
     ) -> None:
+        """在同一事务中替换一篇文档的快照、倒排记录和词项频率。"""
+
         with self._connection:
             affected_term_ids = {
                 row[0]
@@ -441,6 +490,8 @@ class _Index:
         term: str,
         field: int,
     ) -> dict[int, list[int]]:
+        """返回词项在指定字段中的文档 ID 到出现位置列表的映射。"""
+
         rows = self._connection.execute(
             """
             SELECT document_id, positions
@@ -464,6 +515,8 @@ class _Index:
         self,
         document_id: int,
     ) -> tuple[str, str, str] | None:
+        """返回已索引文档的抓取时间、归一化标题和归一化正文。"""
+
         return self._connection.execute(
             """
             SELECT fetched_at, title_norm, text_norm
@@ -473,12 +526,23 @@ class _Index:
             (document_id,),
         ).fetchone()
 
+    def count_documents(self) -> int:
+        """返回当前文档数量。"""
+
+        return self._connection.execute(
+            "SELECT COUNT(*) FROM indexed_documents"
+        ).fetchone()[0]
+
     def count_terms(self) -> int:
+        """返回当前至少出现在一篇文档中的词项数量。"""
+
         return self._connection.execute(
             "SELECT COUNT(*) FROM terms WHERE document_frequency > 0"
         ).fetchone()[0]
 
     def get_total_len_by_field(self, field: int) -> int:
+        """返回所有已索引文档在指定字段中的 token 总数。"""
+
         column = {
             self.TITLE: "title_len",
             self.TEXT: "text_len",
@@ -489,6 +553,8 @@ class _Index:
         ).fetchone()[0]
 
     def get_metadata(self, key: str) -> str | None:
+        """读取索引级元数据；键不存在时返回 None。"""
+
         row = self._connection.execute(
             "SELECT value FROM index_metadata WHERE key = ?",
             (key,),
@@ -496,6 +562,8 @@ class _Index:
         return row[0] if row is not None else None
 
     def set_metadata(self, key: str, value: str) -> None:
+        """新增或覆盖一项索引级元数据。"""
+
         self._connection.execute(
             """
             INSERT INTO index_metadata (key, value)
