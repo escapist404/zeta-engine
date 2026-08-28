@@ -1,13 +1,14 @@
 from collections import Counter
 from math import log
+from pathlib import Path
 
+from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
     load_stopwords,
     text_normalize,
     tokenize_with_positions,
 )
-
 
 def search_term(
     storage: Storage,
@@ -184,16 +185,16 @@ def search_tf_idf(
     return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
 
 
-def search_bm25f(
+def _score_bm25f(
         storage: Storage,
         query: str,
-) -> list[int]:
+) -> dict[int, float]:
     if storage.index is None:
         raise ValueError("查询需要 index_db")
 
     query = text_normalize(query)
     if not query:
-        return []
+        return {}
 
     mode = storage.index.get_metadata("tokenizer_mode") or "default"
     query_terms = [
@@ -203,14 +204,14 @@ def search_bm25f(
     ]
 
     if not query_terms:
-        return []
+        return {}
 
     terms = list(dict.fromkeys(query_terms))
 
     index = storage.index
     document_count = index.count_documents()
     if document_count == 0:
-        return []
+        return {}
 
     postings = {
         term: (
@@ -226,7 +227,7 @@ def search_bm25f(
         for document_id in posting
     }
     if not matches:
-        return []
+        return {}
 
     total_title_len, total_text_len = index.get_total_len()
     average_lengths = {
@@ -279,7 +280,115 @@ def search_bm25f(
             tf = combined_tf(document_id, term)
             scores[document_id] += idf * (k1 + 1.) * tf / (k1 + tf)
 
+    return scores
+
+
+def search_bm25f(
+    storage: Storage,
+    query: str,
+) -> list[int]:
+    scores = _score_bm25f(storage, query)
+    return sorted(scores, key=lambda document_id: (-scores[document_id], document_id))
+
+
+def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
+    if not scores:
+        return {}
+    lowest = min(scores.values())
+    highest = max(scores.values())
+    if highest == lowest:
+        return dict.fromkeys(scores, 1.)
+    scale = highest - lowest
+    return {
+        document_id: (score - lowest) / scale
+        for document_id, score in scores.items()
+    }
+
+
+def _fuse_scores(
+    sparse_scores: dict[int, float],
+    dense_scores: dict[int, float],
+    *,
+    alpha: float,
+    limit: int,
+) -> list[int]:
+    """Min-max normalize each score set, then combine them linearly."""
+
+    if not 0. <= alpha <= 1.:
+        raise ValueError("alpha 必须在 0 到 1 之间")
+    if limit <= 0:
+        return []
+    if alpha == 0.:
+        combined = sparse_scores
+    elif alpha == 1.:
+        combined = dense_scores
+    else:
+        sparse = _normalize_scores(sparse_scores)
+        dense = _normalize_scores(dense_scores)
+        combined = {
+            document_id: (
+                (1. - alpha) * sparse.get(document_id, 0.)
+                + alpha * dense.get(document_id, 0.)
+            )
+            for document_id in sparse.keys() | dense.keys()
+        }
+
     return sorted(
-        matches,
-        key=lambda document_id: (-scores[document_id], document_id),
+        combined,
+        key=lambda document_id: (-combined[document_id], document_id),
+    )[:limit]
+
+
+def search_hybrid(
+    storage: Storage,
+    query: str,
+    dense_index: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    limit: int = 20,
+    alpha: float = .5,
+    device: str | None = None,
+) -> list[int]:
+    """Combine per-query normalized BM25F and Dense scores linearly."""
+
+    if not 0. <= alpha <= 1.:
+        raise ValueError("alpha 必须在 0 到 1 之间")
+    if limit <= 0:
+        return []
+    if alpha == 0.:
+        return search_bm25f(storage, query)[:limit]
+    if alpha == 1.:
+        return [
+            hit.document_id
+            for hit in search_dense(
+                query,
+                dense_index,
+                limit=limit,
+                device=device,
+            )
+        ]
+
+    candidate_limit = max(100, limit * 5)
+    all_sparse_scores = _score_bm25f(storage, query)
+    sparse_ids = sorted(
+        all_sparse_scores,
+        key=lambda document_id: (-all_sparse_scores[document_id], document_id),
+    )[:candidate_limit]
+    sparse_scores = {
+        document_id: all_sparse_scores[document_id]
+        for document_id in sparse_ids
+    }
+    dense_scores = {
+        hit.document_id: hit.score
+        for hit in search_dense(
+            query,
+            dense_index,
+            limit=candidate_limit,
+            device=device,
+        )
+    }
+    return _fuse_scores(
+        sparse_scores,
+        dense_scores,
+        alpha=alpha,
+        limit=limit,
     )

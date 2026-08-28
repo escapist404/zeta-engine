@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from zeta_engine.index import build_index
 from zeta_engine.search import (
+    _fuse_scores,
     search_bm25f,
     search_phrase,
     search_query,
@@ -13,6 +14,35 @@ from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
 
 
 class IndexTest(unittest.TestCase):
+    def test_normalizes_and_linearly_fuses_sparse_and_dense_scores(self) -> None:
+        sparse = {1: 100., 2: 80., 3: 0.}
+        dense = {3: .9, 2: .72, 4: 0.}
+
+        self.assertEqual(
+            _fuse_scores(sparse, dense, alpha=0., limit=3),
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            _fuse_scores(sparse, dense, alpha=1., limit=3),
+            [3, 2, 4],
+        )
+        self.assertEqual(
+            _fuse_scores(sparse, dense, alpha=.5, limit=4),
+            [2, 1, 3, 4],
+        )
+        self.assertEqual(
+            _fuse_scores(
+                {document_id: score * 1000 for document_id, score in sparse.items()},
+                dense,
+                alpha=.5,
+                limit=4,
+            ),
+            [2, 1, 3, 4],
+        )
+
+        with self.assertRaisesRegex(ValueError, "alpha"):
+            _fuse_scores(sparse, dense, alpha=1.1, limit=3)
+
     @patch(
         "zeta_engine.tokenizer.jieba.tokenize",
         return_value=[
