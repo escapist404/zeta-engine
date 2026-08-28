@@ -25,9 +25,20 @@ class IndexTest(unittest.TestCase):
     )
     def test_tokenizer_filters_stopwords_and_keeps_positions(self, _tokenize) -> None:
         self.assertIn("的", load_stopwords())
+        self.assertNotIn("10", load_stopwords())
         self.assertEqual(
             tokenize_with_positions("人民大学 的招生。"),
             [("人民大学", 0), ("招生", 6)],
+        )
+
+    @patch(
+        "zeta_engine.tokenizer.jieba.tokenize",
+        return_value=[("10", 0, 2), ("月", 2, 3), ("14", 3, 5), ("日", 5, 6)],
+    )
+    def test_tokenizer_keeps_date_numbers(self, _tokenize) -> None:
+        self.assertEqual(
+            tokenize_with_positions("10月14日"),
+            [("10", 0), ("月", 2), ("14", 3), ("日", 5)],
         )
 
     def test_searches_terms_queries_and_phrases(self) -> None:

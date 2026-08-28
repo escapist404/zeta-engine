@@ -1,5 +1,3 @@
-from pathlib import Path
-
 SEED_URLS = (
     "http://pd.ruc.edu.cn/",
     "http://sph.ruc.edu.cn/",
@@ -42,6 +40,29 @@ HEADERS = {
 
 TIMEOUT = 30
 
-# Union of the four lists from https://github.com/goto456/stopwords
-STOPWORDS_PATH = Path(__file__).with_name("stopwords.txt")
-STOPWORDS_VERSION = "goto456-bf8b03b9-union"
+# Keep this deliberately small: BM25 already downweights common terms, while
+# aggressive stop-word lists can destroy meaningful dates, ordinals and codes.
+STOPWORDS = frozenset({
+    "的",
+    "了",
+    "和",
+    "与",
+    "及",
+    "或",
+    "在",
+    "是",
+    "为",
+    "于",
+    "对",
+    "把",
+    "被",
+    "由",
+    "从",
+    "向",
+    "以",
+    "而",
+    "并",
+    "也",
+    "都",
+})
+STOPWORDS_VERSION = "builtin-v1"

@@ -1,9 +1,8 @@
 import unicodedata
-from functools import cache
 
 import jieba
 
-from zeta_engine.constants import STOPWORDS_PATH
+from zeta_engine.constants import STOPWORDS
 
 
 def text_normalize(text: str) -> str:
@@ -14,15 +13,10 @@ def text_normalize(text: str) -> str:
     return " ".join(text.split())
 
 
-@cache
 def load_stopwords() -> frozenset[str]:
-    """加载禁用词。返回一个冻结集合。"""
+    """返回内置停用词集合。"""
 
-    return frozenset(
-        text_normalize(line)
-        for line in STOPWORDS_PATH.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    )
+    return STOPWORDS
 
 
 def tokenize_with_positions(
@@ -37,7 +31,11 @@ def tokenize_with_positions(
     return [
         (token, start)
         for token, start, _ in jieba.tokenize(text, mode=mode)
-        if token.strip() and token.casefold() not in stopwords
+        if (
+            token.strip()
+            and any(character.isalnum() for character in token)
+            and token.casefold() not in stopwords
+        )
     ]
 
 
