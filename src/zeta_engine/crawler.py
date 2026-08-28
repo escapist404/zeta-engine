@@ -29,8 +29,13 @@ def get_html(
     session: requests.Session | None = None,
 ) -> tuple[str, str] | None | object:
     try:
+        normalized_url = normalize_url(url)
+        if urlsplit(normalized_url).hostname not in allowed_hosts:
+            logger.info("跳过域名范围外的请求: %s", normalized_url)
+            return SKIPPED_PAGE
+
         client = session or requests
-        response = client.get(url=url, headers=headers, timeout=timeout)
+        response = client.get(url=normalized_url, headers=headers, timeout=timeout)
         final_url = normalize_url(response.url)
         if urlsplit(final_url).hostname not in allowed_hosts:
             logger.info("跳过域名范围外的最终页面: %s", final_url)
@@ -184,7 +189,10 @@ def crawl_urls(
         for url in urls:
             normalized = normalize_url(url)
             parts = urlsplit(normalized)
-            if parts.scheme in {"http", "https"}:
+            if (
+                parts.scheme in {"http", "https"}
+                and parts.hostname in allowed_hosts
+            ):
                 accepted.append(normalized)
 
         for url in queue.enqueue(accepted):

@@ -8,7 +8,10 @@ from zeta_engine.storage import Storage
 PAGES = {
     "https://a.test/": """
         <html><head><title>A</title></head>
-        <body><a href="/next#part">下一页</a></body></html>
+        <body>
+            <a href="/next#part">下一页</a>
+            <a href="https://outside.test/ad">站外广告</a>
+        </body></html>
     """,
     "https://a.test/next": "<html><title>A2</title><body>正文</body></html>",
     "https://b.test/": "<html><title>B</title><body>正文</body></html>",
@@ -206,7 +209,18 @@ class CrawlerTest(unittest.TestCase):
             self.assertEqual(stats["retried"], 0)
             self.assertEqual(storage.queue.count_by_state(), {"done": 1})
 
-    def test_get_html_checks_only_the_final_host(self) -> None:
+    def test_get_html_checks_requested_and_final_hosts(self) -> None:
+        external_session = Mock()
+        self.assertIs(
+            get_html(
+                "https://outside.test/start",
+                {"a.test"},
+                session=external_session,
+            ),
+            SKIPPED_PAGE,
+        )
+        external_session.get.assert_not_called()
+
         allowed_response = Mock(
             url="https://a.test/final",
             headers={"Content-Type": "text/html"},
@@ -218,7 +232,7 @@ class CrawlerTest(unittest.TestCase):
 
         self.assertEqual(
             get_html(
-                "https://outside.test/start",
+                "https://a.test/start",
                 {"a.test"},
                 session=allowed_session,
             ),
@@ -227,53 +241,21 @@ class CrawlerTest(unittest.TestCase):
                 "<html><body>正文</body></html>",
             ),
         )
+        allowed_session.get.assert_called_once()
 
-        blocked_response = Mock(
+        redirected_session = Mock()
+        redirected_session.get.return_value = Mock(
             url="https://outside.test/final",
             headers={"Content-Type": "text/html"},
         )
-        blocked_session = Mock()
-        blocked_session.get.return_value = blocked_response
-
         self.assertIs(
             get_html(
                 "https://a.test/start",
                 {"a.test"},
-                session=blocked_session,
+                session=redirected_session,
             ),
             SKIPPED_PAGE,
         )
-
-    @patch(
-        "zeta_engine.crawler.get_html",
-        return_value=(
-            "https://a.test/final",
-            "<html><title>A</title><body>正文</body></html>",
-        ),
-    )
-    def test_crawl_saves_an_allowed_final_url_from_an_external_start(
-        self,
-        _get_html,
-    ) -> None:
-        with Storage(
-            document_db=":memory:",
-            queue_db=":memory:",
-        ) as storage:
-            stats = crawl_urls(
-                storage,
-                ["https://outside.test/start"],
-                allowed_domains=["https://a.test/"],
-                max_pages=1,
-                download_workers=1,
-                per_host_delay=0,
-            )
-
-            assert storage.documents is not None
-            self.assertEqual(
-                [row[1] for row in storage.documents.iter_all()],
-                ["https://a.test/final"],
-            )
-            self.assertEqual(stats["saved"], 1)
 
 
 if __name__ == "__main__":
