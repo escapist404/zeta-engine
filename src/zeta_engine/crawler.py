@@ -8,9 +8,18 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
+from resiliparse.extract.html2text import extract_plain_text
+from resiliparse.parse.html import HTMLTree
 from url_normalize import url_normalize
 
-from zeta_engine.constants import HEADERS, TIMEOUT
+from zeta_engine.constants import (
+    CONTENT_SELECTORS,
+    EXCLUDED_HTML_SELECTORS,
+    HEADERS,
+    SOCIAL_TITLE_SELECTOR,
+    TIMEOUT,
+    TITLE_SELECTORS,
+)
 from zeta_engine.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -63,19 +72,11 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         if tag["href"].strip()
     ]
 
-    headline = (
-        soup.select_one("#articleDiv h1, #articleDiv [itemprop='headline']")
-        or soup.select_one("article h1, article [itemprop='headline']")
-        or soup.select_one("main h1, main [itemprop='headline']")
-        or soup.select_one("[role='main'] h1, [role='main'] [itemprop='headline']")
-        or soup.select_one(
-            ".article-title, .article_title, .articleTitle, "
-            ".news-title, .news_title, .newsTitle"
-        )
+    headline = next(
+        filter(None, (soup.select_one(selector) for selector in TITLE_SELECTORS)),
+        None,
     )
-    social_title = soup.select_one(
-        "meta[property='og:title'][content], meta[name='twitter:title'][content]"
-    )
+    social_title = soup.select_one(SOCIAL_TITLE_SELECTOR)
     title = (
         headline.get_text(" ", strip=True)
         if headline
@@ -86,36 +87,61 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         else ""
     )
 
-    for tag in soup.select(
-        "script, style, noscript, template, nav, aside, header, footer, bottom, "
-        "[hidden], [aria-hidden='true'], #search_warp, "
-        ".stricky-header, .page_content > .fl, .crumbs, .page_nav, "
-        ".footer, .point_out, .mobile-nav__wrapper, "
-        "section.btm_bar, body.div > section.mn-sec.full_wdth_single_video > div > div.row > div > div > div > div > div, "
-        "body > div.header.__web-inspector-hide-shortcut__, body > div.footer, body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fr > div.crumbs, "
-        "body > div.page-wrapper > div.page > div.page_content.clearfix.common_width_1 > div.fl, "
-        "#top > div.header, #top > div.top_menu_box, "
-        "#footer, #main > div.left_menu, #main > div.content > div.navigation, #main > div.content > div.activity_detail > div.extra_info, "
-        "body > div.content > div > div.leftNav, body > div.content > div > div.rightCon > div.crumbs, "
-        "body > header, #top > div.top_menu_box, #app > header, body > div.top.wow.fadeIn, "
-        "body > div.header.wow.fadeIn, body > div.m3pos.wow.fadeIn, body > div.container > div > div.m3nRx, body > div.container > div > div.m3nLx > form > div.m3n_tm, "
-        "body > div.footer.wow.fadeIn, body > div.container > div > div.m3nLx > form > div.m3nShare.bdsharebuttonbox.wow.fadeIn.bdshare-button-style0-24"
-    ):
+    for tag in soup.select(EXCLUDED_HTML_SELECTORS):
         tag.decompose()
 
-    content = (
-        soup.select_one("#articleDiv")
-        or soup.select_one("article")
-        or soup.select_one("main")
-        or soup.select_one("[role='main']")
-        or soup.select_one(".notice_list")
-        or soup.body
-        or soup
-    )
+    content = soup.body or soup
+    for selector in CONTENT_SELECTORS:
+        if selected := soup.select_one(selector):
+            content = selected
+            break
     document = (
         url,
         title,
         content.get_text(" ", strip=True),
+        datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+    )
+    return document, links
+
+
+def extract_page_resiliparse(
+    html: str,
+    url: str,
+) -> tuple[tuple[str, str, str, str], list[str]]:
+    tree = HTMLTree.parse(html)
+    root = tree.document
+    links = []
+    for link in root.query_selector_all("a[href]"):
+        href = link.getattr("href").strip()
+        if href:
+            links.append(normalize_url(urljoin(url, href)))
+
+    title = ""
+    for selector in TITLE_SELECTORS:
+        headline = root.query_selector(selector)
+        if headline is not None and (title := " ".join(headline.text.split())):
+            break
+
+    if not title:
+        social_title = root.query_selector(SOCIAL_TITLE_SELECTOR)
+        if social_title is not None:
+            title = social_title.getattr("content").strip()
+    if not title:
+        title = " ".join((tree.title or "").split())
+
+    content = None
+    for selector in CONTENT_SELECTORS:
+        if content := root.query_selector(selector):
+            break
+    text = extract_plain_text(
+        content.html if content is not None else tree,
+        main_content=content is None,
+        preserve_formatting=False,
+    )
+    document = (
+        url,
+        title,
+        text,
         datetime.now(timezone.utc).isoformat(),  # noqa: UP017
     )
     return document, links
@@ -130,6 +156,7 @@ def crawl_urls(
     download_workers: int = 4,
     per_host_delay: float = 1.0,
     max_attempts: int = 3,
+    extractor: str = "beautifulsoup",
 ) -> dict[str, int]:
     stats = {
         "scheduled": 0,
@@ -145,6 +172,12 @@ def crawl_urls(
         raise ValueError("download_workers 必须大于 0")
     if max_attempts <= 0:
         raise ValueError("max_attempts 必须大于 0")
+    extract = {
+        "beautifulsoup": extract_page,
+        "resiliparse": extract_page_resiliparse,
+    }.get(extractor)
+    if extract is None:
+        raise ValueError(f"不支持的页面抽取器: {extractor}")
     if storage.documents is None or storage.queue is None:
         raise ValueError("爬虫需要 document_db 和 queue_db")
 
@@ -298,7 +331,7 @@ def crawl_urls(
                     continue
 
                 final_url, html = result
-                document, links = extract_page(html, final_url)
+                document, links = extract(html, final_url)
                 document_id = documents.save(
                     url=document[0],
                     title=document[1],

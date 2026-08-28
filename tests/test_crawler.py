@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from zeta_engine.crawler import SKIPPED_PAGE, crawl_urls, extract_page, get_html
+from zeta_engine.crawler import (
+    SKIPPED_PAGE,
+    crawl_urls,
+    extract_page,
+    extract_page_resiliparse,
+    get_html,
+)
 from zeta_engine.storage import Storage
 
 
@@ -94,6 +100,82 @@ class CrawlerTest(unittest.TestCase):
         document, _links = extract_page(html, "https://a.test/article")
 
         self.assertEqual(document[1], "具体内容标题")
+
+    def test_extract_page_ignores_nonvisible_fallback_content(self) -> None:
+        html = """
+            <html><head><title>页面标题</title></head><body>
+                <script>不应索引</script>
+                <style>.hidden { display: none; }</style>
+                <p>页面正文</p>
+            </body></html>
+        """
+
+        document, _links = extract_page(html, "https://a.test/article")
+
+        self.assertEqual(document[2], "页面正文")
+
+    def test_extract_page_uses_guoxue_title_fallback(self) -> None:
+        html = """
+            <html><head><title>国学院网站</title></head><body>
+            <div>
+                <div>首栏</div>
+                <div><div><div class="right">
+                    <div>信息栏</div>
+                    <div><div><div>国学院文章标题</div></div></div>
+                </div></div></div>
+            </div>
+            </body></html>
+        """
+
+        document, _links = extract_page(html, "https://guoxue.ruc.edu.cn/article")
+
+        self.assertEqual(document[1], "国学院文章标题")
+
+    def test_resiliparse_extractor_keeps_links_and_main_content(self) -> None:
+        html = """
+            <html><head><title>网站标题</title></head><body>
+                <header><a href="/nav">导航</a></header>
+                <main><h1>页面标题</h1><p>页面正文</p></main>
+                <footer>页脚</footer>
+            </body></html>
+        """
+
+        document, links = extract_page_resiliparse(
+            html,
+            "https://a.test/article",
+        )
+
+        self.assertEqual(document[1], "页面标题")
+        self.assertEqual(document[2], "页面标题 页面正文")
+        self.assertEqual(links, ["https://a.test/nav"])
+
+    @patch("zeta_engine.crawler.extract_page_resiliparse")
+    @patch(
+        "zeta_engine.crawler.get_html",
+        return_value=(
+            "https://a.test/",
+            "<html><title>A</title><body>正文</body></html>",
+        ),
+    )
+    def test_crawl_selects_resiliparse_extractor(
+        self,
+        _get_html,
+        extract_resiliparse,
+    ) -> None:
+        extract_resiliparse.return_value = (
+            ("https://a.test/", "A", "正文", "2026-08-28T00:00:00+00:00"),
+            [],
+        )
+        with Storage(document_db=":memory:", queue_db=":memory:") as storage:
+            crawl_urls(
+                storage,
+                ["https://a.test/"],
+                max_pages=1,
+                per_host_delay=0,
+                extractor="resiliparse",
+            )
+
+        extract_resiliparse.assert_called_once()
 
     @patch(
         "zeta_engine.crawler.get_html",
