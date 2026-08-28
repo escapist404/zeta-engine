@@ -67,7 +67,7 @@ class CliTest(unittest.TestCase):
                 assert storage.documents is not None
                 document_id = storage.documents.save(
                     url="https://example.test/dense",
-                    title="Dense 结果",
+                    title="Ｄｅｎｓｅ 结果",
                     text="原始正文",
                     fetched_at="2026-08-28T10:00:00",
                 )
@@ -110,7 +110,7 @@ class CliTest(unittest.TestCase):
             ])
             with patch(
                 "zeta_engine.cli.search_dense",
-                return_value=[DenseHit(document_id, 0.9, "最佳分块")],
+                return_value=[DenseHit(document_id, 0.9, "最佳分块１０")],
             ) as search_dense, redirect_stdout(output := io.StringIO()):
                 self.assertEqual(search_args.handler(search_args), 0)
 
@@ -120,7 +120,8 @@ class CliTest(unittest.TestCase):
                 limit=20,
                 device="mps",
             )
-            self.assertIn("最佳分块", output.getvalue())
+            self.assertIn("dense 结果", output.getvalue())
+            self.assertIn("最佳分块10", output.getvalue())
 
             evaluation_args = parser.parse_args([
                 "eval",

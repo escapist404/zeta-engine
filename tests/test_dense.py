@@ -114,8 +114,12 @@ class DenseTest(unittest.TestCase):
         )
         self.assertEqual(dense._chunk_document(tokenizer, "", ""), [])
         self.assertEqual(
-            dense._chunk_document(tokenizer, "标题", "短正文")[0][1],
-            "短正文",
+            dense._chunk_document(
+                tokenizer,
+                "标题ＶＣＲ",
+                "短正文１０月１４日",
+            )[0][1],
+            "短正文10月14日",
         )
 
     def test_builds_and_searches_a_dense_index(self) -> None:

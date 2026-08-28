@@ -11,13 +11,14 @@ from typing import Any
 import numpy as np
 
 from zeta_engine.storage import Storage
+from zeta_engine.tokenizer import text_normalize
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = Path("models/bge-small-zh-v1.5")
 DEFAULT_INDEX_DIR = Path("data/dense")
 QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EMBEDDING_DIMENSION = 512
 MAX_TOKENS = 384
 TITLE_MAX_TOKENS = 64
@@ -35,7 +36,7 @@ class DenseHit:
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join(text.split())
+    return text_normalize(text)
 
 
 def _decode(tokenizer: Any, token_ids: list[int]) -> str:

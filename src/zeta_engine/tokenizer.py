@@ -4,6 +4,8 @@ import jieba
 
 from zeta_engine.constants import STOPWORDS
 
+TEXT_NORMALIZER_VERSION = "1"
+
 
 def text_normalize(text: str) -> str:
     """使用相容性合成对文本进行标准化。"""

@@ -25,8 +25,8 @@ class WebTest(unittest.TestCase):
                 assert storage.documents is not None
                 storage.documents.save(
                     url="https://info.ruc.edu.cn/example",
-                    title="中国人民大学",
-                    text="信息学院欢迎你",
+                    title="中国人民大学ＶＣＲ",
+                    text="信息学院于１０月１４日欢迎你",
                     fetched_at="2026-08-28T10:00:00",
                 )
                 build_index(storage, mode="search")
@@ -53,10 +53,15 @@ class WebTest(unittest.TestCase):
                     payload["results"][0]["url"],
                     "https://info.ruc.edu.cn/example",
                 )
+                self.assertEqual(
+                    payload["results"][0]["title"],
+                    "中国人民大学vcr",
+                )
+                self.assertIn("10月14日", payload["results"][0]["snippet"])
 
                 with patch(
                     "zeta_engine.web.search_dense",
-                    return_value=[DenseHit(1, 0.9, "Dense 命中分块")],
+                    return_value=[DenseHit(1, 0.9, "Ｄｅｎｓｅ 命中１０")],
                 ):
                     with urlopen(
                         f"{base_url}/api/search?q=test&ranking=dense"
@@ -64,7 +69,7 @@ class WebTest(unittest.TestCase):
                         dense_payload = json.load(response)
                 self.assertEqual(
                     dense_payload["results"][0]["snippet"],
-                    "Dense 命中分块",
+                    "dense 命中10",
                 )
 
                 with patch(

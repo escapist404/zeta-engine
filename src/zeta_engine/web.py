@@ -14,6 +14,7 @@ from zeta_engine.search import (
     search_reranked,
 )
 from zeta_engine.storage import Storage
+from zeta_engine.tokenizer import text_normalize
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +81,10 @@ def search_documents(
                 continue
             url, title, text, _fetched_at = document
             results.append({
-                "title": title or url,
+                "title": text_normalize(title) or url,
                 "url": url,
-                "snippet": snippets.get(
-                    document_id,
-                    " ".join(text.split()),
+                "snippet": text_normalize(
+                    snippets.get(document_id, text),
                 )[:240],
             })
         return results

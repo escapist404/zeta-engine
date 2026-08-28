@@ -12,7 +12,11 @@ from zeta_engine.search import (
     search_reranked,
 )
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
+from zeta_engine.tokenizer import (
+    load_stopwords,
+    text_normalize,
+    tokenize_with_positions,
+)
 
 
 class CharacterTokenizer:
@@ -42,6 +46,12 @@ class CharacterTokenizer:
 
 
 class IndexTest(unittest.TestCase):
+    def test_normalizes_compatibility_characters(self) -> None:
+        self.assertEqual(
+            text_normalize(" １０月１４日 ＶＣＲ  "),
+            "10月14日 vcr",
+        )
+
     def test_hybrid_combines_sparse_and_dense_results(self) -> None:
         with (
             patch("zeta_engine.search._score_bm25f", return_value={1: 2., 2: 1.}),
@@ -72,8 +82,8 @@ class IndexTest(unittest.TestCase):
             assert storage.documents is not None
             first = storage.documents.save(
                 url="https://example.test/first",
-                title="第一篇",
-                text="普通正文",
+                title="第一篇ＶＣＲ",
+                text="普通正文１０",
                 fetched_at="2026-08-28T10:00:00",
             )
             second = storage.documents.save(
@@ -98,7 +108,7 @@ class IndexTest(unittest.TestCase):
             ):
                 result = search_reranked(
                     storage,
-                    "相关查询",
+                    "相关ＱＵＥＲＹ",
                     Path("dense"),
                     reranker_model=Path("reranker"),
                     limit=2,
@@ -111,7 +121,7 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(result, [second, first])
         search_hybrid.assert_called_once_with(
             storage,
-            "相关查询",
+            "相关query",
             Path("dense"),
             limit=10,
             alpha=.7,
@@ -120,8 +130,8 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(
             model.predict.call_args.args[0],
             [
-                ("相关查询", "第一篇\n普通正文"),
-                ("相关查询", "第二篇\n真正相关的正文"),
+                ("相关query", "第一篇vcr\n普通正文10"),
+                ("相关query", "第二篇\n真正相关的正文"),
             ],
         )
         self.assertEqual(model.predict.call_args.kwargs["batch_size"], 4)
@@ -287,6 +297,11 @@ class IndexTest(unittest.TestCase):
                 self.assertEqual(build_index(storage, "default")["skipped"], 1)
                 self.assertEqual(build_index(storage, "search")["indexed"], 1)
                 storage.index.set_metadata("stopwords_version", "outdated")
+                self.assertEqual(build_index(storage, "search")["indexed"], 1)
+                storage.index.set_metadata(
+                    "text_normalizer_version",
+                    "outdated",
+                )
                 self.assertEqual(build_index(storage, "search")["indexed"], 1)
 
             self.assertEqual(

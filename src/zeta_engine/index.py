@@ -2,7 +2,11 @@ import logging
 
 from zeta_engine.constants import STOPWORDS_VERSION
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
+from zeta_engine.tokenizer import (
+    TEXT_NORMALIZER_VERSION,
+    text_normalize,
+    tokenize_with_positions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,10 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
     mode_changed = index.get_metadata("tokenizer_mode") != mode
     stopwords_changed = (
         index.get_metadata("stopwords_version") != STOPWORDS_VERSION
+    )
+    normalizer_changed = (
+        index.get_metadata("text_normalizer_version")
+        != TEXT_NORMALIZER_VERSION
     )
 
     stats = {
@@ -36,6 +44,7 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
         if (
             not mode_changed
             and not stopwords_changed
+            and not normalizer_changed
             and indexed_document is not None
             and indexed_document[0] == fetched_at
         ):
@@ -66,5 +75,6 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
 
     index.set_metadata("tokenizer_mode", mode)
     index.set_metadata("stopwords_version", STOPWORDS_VERSION)
+    index.set_metadata("text_normalizer_version", TEXT_NORMALIZER_VERSION)
 
     return stats

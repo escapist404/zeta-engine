@@ -307,8 +307,8 @@ def _rerank_passages(
 ) -> list[str]:
     """Return one or two distinct passages with strong lexical query overlap."""
 
-    title = " ".join(title.split())
-    text = " ".join(text.split())
+    title = text_normalize(title)
+    text = text_normalize(text)
     if not title and not text:
         return []
 
@@ -424,6 +424,7 @@ def search_reranked(
     if batch_size <= 0:
         raise ValueError("batch_size 必须大于 0")
 
+    query = text_normalize(query)
     candidates = search_hybrid(
         storage,
         query,
