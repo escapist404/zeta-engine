@@ -72,7 +72,7 @@ def send_ans(
     passwd: str,
     urls: list[list[str]],
     elapsed_seconds: list[float],
-) -> tuple[str, float, float]:
+) -> tuple[str, float, list[float], float]:
     response = requests.post(
         urljoin(base_url, "mrr"),
         data={
@@ -90,6 +90,7 @@ def send_ans(
         raise RuntimeError(data.get("message", "评测服务器错误"))
 
     mode, mrr = data.get("mode"), data.get("mrr")
+    details = data.get("details", [])
     average_latency = data.get("average_latency_seconds")
     if (
         not isinstance(mode, str)
@@ -97,7 +98,19 @@ def send_ans(
         or not isinstance(average_latency, (int, float))
     ):
         raise ValueError("评测服务器返回的分数或平均时延格式不正确")
-    return mode, float(mrr), float(average_latency)
+    if mode == "debug":
+        if not isinstance(details, list) or not all(
+            isinstance(item, (int, float)) for item in details
+        ):
+            raise ValueError("评测服务器返回的逐题分数格式不正确")
+    else:
+        details = []
+    return (
+        mode,
+        float(mrr),
+        [float(item) for item in details],
+        float(average_latency),
+    )
 
 
 def main() -> None:
@@ -119,13 +132,15 @@ def main() -> None:
         all_urls.append(result[:20])
         elapsed_seconds.append(round(elapsed, 3))
 
-    mode, mrr, average_latency = send_ans(
+    mode, mrr, details, average_latency = send_ans(
         idx,
         passwd,
         all_urls,
         elapsed_seconds,
     )
     print(f"MRR@20: [{mrr}], [{mode}] mode")
+    if mode == "debug":
+        print(f"Per-query reciprocal ranks: {details}")
     print(f"Average latency: {average_latency:.3f}s/query")
 
 
