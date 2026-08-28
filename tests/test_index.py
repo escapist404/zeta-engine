@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from zeta_engine.index import build_index
 from zeta_engine.search import (
@@ -7,6 +8,7 @@ from zeta_engine.search import (
     search_bm25f,
     search_phrase,
     search_query,
+    search_reranked,
     search_term,
 )
 from zeta_engine.storage import Storage
@@ -14,6 +16,64 @@ from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
 
 
 class IndexTest(unittest.TestCase):
+    def test_cross_encoder_reranks_hybrid_candidates(self) -> None:
+        with Storage(document_db=":memory:") as storage:
+            assert storage.documents is not None
+            first = storage.documents.save(
+                url="https://example.test/first",
+                title="第一篇",
+                text="普通正文",
+                fetched_at="2026-08-28T10:00:00",
+            )
+            second = storage.documents.save(
+                url="https://example.test/second",
+                title="第二篇",
+                text="真正相关的正文",
+                fetched_at="2026-08-28T10:00:00",
+            )
+            model = Mock()
+            model.predict.return_value = [0.1, 0.9]
+
+            with (
+                patch(
+                    "zeta_engine.search.search_hybrid",
+                    return_value=[first, second],
+                ) as search_hybrid,
+                patch(
+                    "zeta_engine.search._load_cross_encoder",
+                    return_value=model,
+                ),
+            ):
+                result = search_reranked(
+                    storage,
+                    "相关查询",
+                    Path("dense"),
+                    reranker_model=Path("reranker"),
+                    limit=2,
+                    candidate_limit=10,
+                    batch_size=4,
+                    alpha=.7,
+                    device="mps",
+                )
+
+        self.assertEqual(result, [second, first])
+        search_hybrid.assert_called_once_with(
+            storage,
+            "相关查询",
+            Path("dense"),
+            limit=10,
+            alpha=.7,
+            device="mps",
+        )
+        self.assertEqual(
+            model.predict.call_args.args[0],
+            [
+                ("相关查询", "第一篇\n普通正文"),
+                ("相关查询", "第二篇\n真正相关的正文"),
+            ],
+        )
+        self.assertEqual(model.predict.call_args.kwargs["batch_size"], 4)
+
     def test_normalizes_and_linearly_fuses_sparse_and_dense_scores(self) -> None:
         sparse = {1: 100., 2: 80., 3: 0.}
         dense = {3: .9, 2: .72, 4: 0.}

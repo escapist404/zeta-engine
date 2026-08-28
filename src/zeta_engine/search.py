@@ -1,6 +1,10 @@
 from collections import Counter
+from functools import lru_cache
 from math import log
 from pathlib import Path
+from threading import Lock
+
+import numpy as np
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
 from zeta_engine.storage import Storage
@@ -9,6 +13,12 @@ from zeta_engine.tokenizer import (
     text_normalize,
     tokenize_with_positions,
 )
+
+DEFAULT_RERANKER_MODEL_PATH = Path("models/bge-reranker-base")
+DEFAULT_RERANK_CANDIDATES = 50
+DEFAULT_RERANK_BATCH_SIZE = 16
+
+_RERANK_LOCK = Lock()
 
 def search_term(
     storage: Storage,
@@ -392,3 +402,84 @@ def search_hybrid(
         alpha=alpha,
         limit=limit,
     )
+
+
+@lru_cache(maxsize=2)
+def _load_cross_encoder(model_path: str, device: str | None):
+    path = Path(model_path)
+    if not path.is_dir():
+        raise FileNotFoundError(f"Reranker 模型目录不存在: {path}")
+
+    from sentence_transformers import CrossEncoder
+
+    return CrossEncoder(
+        str(path),
+        device=device,
+        local_files_only=True,
+        max_length=512,
+    )
+
+
+def search_reranked(
+    storage: Storage,
+    query: str,
+    dense_index: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    reranker_model: str | Path = DEFAULT_RERANKER_MODEL_PATH,
+    limit: int = 20,
+    candidate_limit: int = DEFAULT_RERANK_CANDIDATES,
+    batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
+    alpha: float = .5,
+    device: str | None = None,
+) -> list[int]:
+    """Rerank Hybrid candidates with a query-document CrossEncoder."""
+
+    if storage.documents is None:
+        raise ValueError("Reranker 查询需要 document_db")
+    if limit <= 0:
+        return []
+    if candidate_limit <= 0:
+        raise ValueError("candidate_limit 必须大于 0")
+    if batch_size <= 0:
+        raise ValueError("batch_size 必须大于 0")
+
+    candidates = search_hybrid(
+        storage,
+        query,
+        dense_index,
+        limit=max(limit, candidate_limit),
+        alpha=alpha,
+        device=device,
+    )
+    document_ids = []
+    pairs = []
+    for document_id in candidates:
+        document = storage.documents.get(document_id)
+        if document is None:
+            continue
+        _url, title, text, _fetched_at = document
+        passage = "\n".join(filter(None, (
+            " ".join(title.split()),
+            " ".join(text.split()),
+        )))
+        document_ids.append(document_id)
+        pairs.append((query, passage))
+
+    if not pairs:
+        return []
+
+    model = _load_cross_encoder(str(Path(reranker_model).resolve()), device)
+    with _RERANK_LOCK:
+        scores = np.asarray(model.predict(
+            pairs,
+            batch_size=batch_size,
+            show_progress_bar=False,
+        )).reshape(-1)
+    if len(scores) != len(document_ids):
+        raise ValueError("Reranker 返回的分数数量不正确")
+
+    order = sorted(
+        range(len(document_ids)),
+        key=lambda index: (-float(scores[index]), index),
+    )
+    return [document_ids[index] for index in order[:limit]]
