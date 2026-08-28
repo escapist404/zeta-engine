@@ -134,11 +134,20 @@ uv run zeta-engine stats
 
 ### 评测
 
-构造索引后运行 MRR@20 评测：
+构造索引后运行搜索 MRR@20 评测（默认 `--mode search`）：
 
 ```bash
 uv run zeta-engine eval
 ```
+
+运行 RAG 回答评测：
+
+```bash
+uv run zeta-engine eval --mode rag --top-k 5
+```
+
+RAG 模式使用 `/rag/login`、`/rag/score` 接口；单题异常或耗时超过 60 秒时
+提交空答案，debug 模式会显示逐题裁判分数与理由。
 
 如需使用其他评测服务地址：
 
@@ -146,7 +155,7 @@ uv run zeta-engine eval
 uv run zeta-engine eval --base-url http://localhost:8080
 ```
 
-空密码进入 debug 模式，评测服务会返回每道查询的 reciprocal rank：
+搜索模式下空密码进入 debug，评测服务会返回每道查询的 reciprocal rank：
 
 ```bash
 uv run zeta-engine eval --ranking dense --device mps

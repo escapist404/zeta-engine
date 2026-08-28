@@ -11,7 +11,7 @@ from zeta_engine.dense import (
     build_dense_index,
     search_dense,
 )
-from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation
+from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation, run_rag_evaluation
 from zeta_engine.index import build_index
 from zeta_engine.rag import agentic_rag_answer
 from zeta_engine.search import (
@@ -300,9 +300,10 @@ def run_evaluator(args: argparse.Namespace) -> int:
         raise SystemExit("--reranker-batch-size 必须大于 0")
     if not 0. <= args.alpha <= 1.:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
-    run_evaluation(
-        args.document_db,
-        args.index_db,
+    if args.mode == "rag" and args.top_k <= 0:
+        raise SystemExit("--top-k 必须大于 0")
+    evaluator = run_rag_evaluation if args.mode == "rag" else run_evaluation
+    kwargs = dict(
         base_url=args.base_url,
         ranking=args.ranking,
         dense_index=args.dense_index,
@@ -311,6 +312,13 @@ def run_evaluator(args: argparse.Namespace) -> int:
         reranker_batch_size=args.reranker_batch_size,
         device=args.device,
         alpha=args.alpha,
+    )
+    if args.mode == "rag":
+        kwargs["top_k"] = args.top_k
+    evaluator(
+        args.document_db,
+        args.index_db,
+        **kwargs,
     )
     return 0
 
@@ -528,7 +536,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     server.set_defaults(handler=run_server)
 
-    evaluation = commands.add_parser("eval", help="运行 MRR@20 评测")
+    evaluation = commands.add_parser("eval", help="运行搜索或 RAG 评测")
+    evaluation.add_argument(
+        "--mode",
+        choices=("search", "rag"),
+        default="search",
+    )
     evaluation.add_argument(
         "--document-db",
         type=Path,
@@ -551,6 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_INDEX_DIR,
     )
     evaluation.add_argument("--device")
+    evaluation.add_argument("--top-k", type=int, default=5)
     evaluation.add_argument("--alpha", type=float, default=.5)
     evaluation.add_argument(
         "--reranker-model",

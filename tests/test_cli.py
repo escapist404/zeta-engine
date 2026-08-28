@@ -53,6 +53,44 @@ class CliTest(unittest.TestCase):
                 alpha=.5,
             )
 
+    def test_runs_rag_evaluation_from_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document_db = root / "documents.db"
+            index_db = root / "index.db"
+            dense_index = root / "dense"
+            document_db.touch()
+            index_db.touch()
+            dense_index.mkdir()
+            (dense_index / "metadata.json").touch()
+
+            args = build_parser().parse_args([
+                "eval",
+                "--mode", "rag",
+                "--document-db", str(document_db),
+                "--index-db", str(index_db),
+                "--dense-index", str(dense_index),
+                "--top-k", "8",
+            ])
+            with patch(
+                "zeta_engine.cli.run_rag_evaluation"
+            ) as run_rag_evaluation:
+                self.assertEqual(args.handler(args), 0)
+
+            run_rag_evaluation.assert_called_once_with(
+                document_db,
+                index_db,
+                base_url=DEFAULT_BASE_URL,
+                ranking="hybrid",
+                dense_index=dense_index,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
+                device=None,
+                alpha=.5,
+                top_k=8,
+            )
+
     def test_runs_rag_from_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

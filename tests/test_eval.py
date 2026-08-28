@@ -10,7 +10,9 @@ from zeta_engine.eval import (
     DEFAULT_BASE_URL,
     evaluate,
     run_evaluation,
+    run_rag_evaluation,
     send_answers,
+    send_rag_answers,
 )
 from zeta_engine.index import build_index
 from zeta_engine.storage import Storage
@@ -37,6 +39,98 @@ class EvalTest(unittest.TestCase):
                 ),
                 ("debug", 0.75, [1.0, 0.5], 0.2),
             )
+
+    def test_send_rag_answers_reads_debug_judge_outputs(self) -> None:
+        response = Mock()
+        response.text = repr({
+            "mode": "debug",
+            "score": 0.8,
+            "details": [0.8],
+            "average_latency_seconds": 0.2,
+            "judge_outputs": [{"score": 0.8, "reason": "正确"}],
+        })
+
+        with patch(
+            "zeta_engine.eval.requests.post",
+            return_value=response,
+        ) as post:
+            result = send_rag_answers(
+                "http://example.test",
+                "student",
+                "",
+                ["答案"],
+                [0.2],
+            )
+
+        self.assertEqual(
+            result,
+            (
+                "debug",
+                0.8,
+                [0.8],
+                0.2,
+                [{"score": 0.8, "reason": "正确"}],
+            ),
+        )
+        self.assertEqual(post.call_args.args[0], "http://example.test/rag/score")
+
+    def test_runs_rag_evaluation_and_submits_answers(self) -> None:
+        result = [{
+            "title": "标题",
+            "url": "https://example.test",
+            "snippet": "材料",
+        }]
+
+        def answer(query, search_fn, *, top_k):
+            self.assertEqual(search_fn(query, top_k), result)
+            return {"answer": f"回答 {query}", "results": result}
+
+        with (
+            patch("zeta_engine.eval.input_idx", return_value="student"),
+            patch("zeta_engine.eval.input_passwd", return_value=""),
+            patch("zeta_engine.eval.rag_login", return_value=["问题"]),
+            patch(
+                "zeta_engine.eval.search_documents",
+                return_value=result,
+            ) as search_documents,
+            patch(
+                "zeta_engine.eval.agentic_rag_answer",
+                side_effect=answer,
+            ),
+            patch(
+                "zeta_engine.eval.send_rag_answers",
+                return_value=(
+                    "debug",
+                    1.0,
+                    [1.0],
+                    0.1,
+                    [{"score": 1.0, "reason": "正确"}],
+                ),
+            ) as send_rag_answers_mock,
+            redirect_stdout(output := io.StringIO()),
+        ):
+            run_rag_evaluation(
+                "documents.db",
+                "index.db",
+                top_k=7,
+            )
+
+        search_documents.assert_called_once_with(
+            "documents.db",
+            "index.db",
+            "问题",
+            7,
+            ranking="hybrid",
+            dense_index=Path("data/dense"),
+            reranker_model=Path("models/bge-reranker-base"),
+            rerank_candidates=50,
+            reranker_batch_size=16,
+            device=None,
+            alpha=.5,
+            content_limit=3000,
+        )
+        self.assertEqual(send_rag_answers_mock.call_args.args[3], ["回答 问题"])
+        self.assertIn("Judge 1: score=1.0, reason=正确", output.getvalue())
 
     def test_debug_evaluation_prints_per_query_scores(self) -> None:
         first_urls = [f"https://a{rank}.test" for rank in range(1, 21)]
