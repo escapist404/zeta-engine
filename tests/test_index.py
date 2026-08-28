@@ -2,20 +2,71 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
 from zeta_engine.search import (
     _fuse_scores,
     search_bm25f,
+    search_hybrid,
     search_phrase,
-    search_query,
     search_reranked,
-    search_term,
 )
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
 
 
+class CharacterTokenizer:
+    def encode(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool,
+        verbose: bool = True,
+    ) -> list[int]:
+        del add_special_tokens, verbose
+        return [ord(character) for character in text]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        skip_special_tokens: bool,
+        clean_up_tokenization_spaces: bool,
+    ) -> str:
+        del skip_special_tokens, clean_up_tokenization_spaces
+        return "".join(chr(token_id) for token_id in token_ids)
+
+    def num_special_tokens_to_add(self, *, pair: bool) -> int:
+        del pair
+        return 3
+
+
 class IndexTest(unittest.TestCase):
+    def test_hybrid_combines_sparse_and_dense_results(self) -> None:
+        with (
+            patch("zeta_engine.search._score_bm25f", return_value={1: 2., 2: 1.}),
+            patch(
+                "zeta_engine.search.search_dense",
+                return_value=[DenseHit(2, .9, ""), DenseHit(3, .5, "")],
+            ) as search_dense,
+        ):
+            result = search_hybrid(
+                Mock(),
+                "query",
+                Path("dense"),
+                limit=2,
+                alpha=.5,
+                device="cpu",
+            )
+
+        self.assertEqual(result, [1, 2])
+        search_dense.assert_called_once_with(
+            "query",
+            Path("dense"),
+            limit=100,
+            device="cpu",
+        )
+
     def test_cross_encoder_reranks_hybrid_candidates(self) -> None:
         with Storage(document_db=":memory:") as storage:
             assert storage.documents is not None
@@ -32,6 +83,7 @@ class IndexTest(unittest.TestCase):
                 fetched_at="2026-08-28T10:00:00",
             )
             model = Mock()
+            model.tokenizer = CharacterTokenizer()
             model.predict.return_value = [0.1, 0.9]
 
             with (
@@ -73,6 +125,63 @@ class IndexTest(unittest.TestCase):
             ],
         )
         self.assertEqual(model.predict.call_args.kwargs["batch_size"], 4)
+
+    def test_cross_encoder_uses_dynamic_query_focused_passages(self) -> None:
+        with Storage(document_db=":memory:") as storage:
+            assert storage.documents is not None
+            long_document = storage.documents.save(
+                url="https://example.test/long",
+                title="长文档",
+                text="目标开头" + "无关内容" * 400 + "末尾目标证据",
+                fetched_at="2026-08-28T10:00:00",
+            )
+            distractor = storage.documents.save(
+                url="https://example.test/distractor",
+                title="干扰文档",
+                text="表面相关",
+                fetched_at="2026-08-28T10:00:00",
+            )
+            model = Mock()
+            model.tokenizer = CharacterTokenizer()
+
+            def score_passages(pairs, **_kwargs):
+                return [
+                    .9 if "末尾目标证据" in passage
+                    else .5 if "表面相关" in passage
+                    else .1
+                    for _query, passage in pairs
+                ]
+
+            model.predict.side_effect = score_passages
+
+            with (
+                patch(
+                    "zeta_engine.search.search_hybrid",
+                    return_value=[long_document, distractor],
+                ),
+                patch(
+                    "zeta_engine.search._load_cross_encoder",
+                    return_value=model,
+                ),
+            ):
+                result = search_reranked(
+                    storage,
+                    "目标查询",
+                    Path("dense"),
+                    reranker_model=Path("reranker"),
+                    limit=2,
+                )
+
+        self.assertEqual(result, [long_document, distractor])
+        pairs = model.predict.call_args.args[0]
+        long_passages = [
+            passage
+            for _query, passage in pairs
+            if passage.startswith("长文档\n")
+        ]
+        self.assertEqual(len(long_passages), 2)
+        self.assertIn("目标开头", long_passages[0])
+        self.assertIn("末尾目标证据", long_passages[1])
 
     def test_normalizes_and_linearly_fuses_sparse_and_dense_scores(self) -> None:
         sparse = {1: 100., 2: 80., 3: 0.}
@@ -131,7 +240,7 @@ class IndexTest(unittest.TestCase):
             [("10", 0), ("月", 2), ("14", 3), ("日", 5)],
         )
 
-    def test_searches_terms_queries_and_phrases(self) -> None:
+    def test_searches_phrases(self) -> None:
         with Storage(document_db=":memory:", index_db=":memory:") as storage:
             assert storage.documents is not None
             storage.documents.save(
@@ -157,8 +266,6 @@ class IndexTest(unittest.TestCase):
                 patch("zeta_engine.search.tokenize_with_positions", side_effect=tokenize),
             ):
                 build_index(storage)
-                self.assertEqual(search_term(storage, "人民"), {1, 2})
-                self.assertEqual(search_query(storage, "人民 招生"), [1, 2])
                 self.assertEqual(search_phrase(storage, "人民大学"), [1])
 
     def test_changing_mode_rebuilds_unchanged_documents(self) -> None:

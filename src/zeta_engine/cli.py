@@ -19,9 +19,8 @@ from zeta_engine.search import (
     DEFAULT_RERANKER_MODEL_PATH,
     search_bm25f,
     search_hybrid,
-    search_query,
+    search_phrase,
     search_reranked,
-    search_tf_idf,
 )
 from zeta_engine.storage import Storage
 from zeta_engine.web import serve
@@ -176,11 +175,7 @@ def run_search(args: argparse.Namespace) -> int:
             document_ids = [hit.document_id for hit in hits]
             snippets = {hit.document_id: hit.snippet for hit in hits}
         elif args.phrase:
-            document_ids = search_query(storage, args.query, phrase=True)
-        elif args.ranking == "tf-idf":
-            document_ids = search_tf_idf(storage, args.query)
-        elif args.ranking == "bm25f":
-            document_ids = search_bm25f(storage, args.query)
+            document_ids = search_phrase(storage, args.query)
         elif args.ranking == "hybrid":
             document_ids = search_hybrid(
                 storage,
@@ -379,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--phrase", action="store_true", help="精确短语查询")
     search.add_argument(
         "--ranking",
-        choices=("simple", "tf-idf", "bm25f", "dense", "hybrid", "rerank"),
+        choices=("bm25f", "dense", "hybrid", "rerank"),
         default="hybrid",
         help="普通查询的排名算法",
     )

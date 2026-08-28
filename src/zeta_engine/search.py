@@ -1,15 +1,15 @@
-from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from math import log
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import numpy as np
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
-    load_stopwords,
     text_normalize,
     tokenize_with_positions,
 )
@@ -17,23 +17,11 @@ from zeta_engine.tokenizer import (
 DEFAULT_RERANKER_MODEL_PATH = Path("models/bge-reranker-base")
 DEFAULT_RERANK_CANDIDATES = 50
 DEFAULT_RERANK_BATCH_SIZE = 16
+RERANK_MAX_TOKENS = 512
+RERANK_TITLE_MAX_TOKENS = 64
+RERANK_OVERLAP_TOKENS = 64
 
 _RERANK_LOCK = Lock()
-
-def search_term(
-    storage: Storage,
-    term: str,
-) -> set[int]:
-    if storage.index is None:
-        raise ValueError("查询需要 index_db")
-
-    term = text_normalize(term)
-    if not term or term in load_stopwords():
-        return set()
-
-    return set(storage.index.lookup_posting(term, storage.index.TITLE)) | set(
-        storage.index.lookup_posting(term, storage.index.TEXT)
-    )
 
 
 def search_phrase(
@@ -79,120 +67,6 @@ def search_phrase(
                 matches.add(document_id)
 
     return sorted(matches)
-
-
-def search_query(
-        storage: Storage, 
-        query: str, *, 
-        phrase: bool = False
-) -> list[int]:
-    if storage.index is None:
-        raise ValueError("查询需要 index_db")
-    if phrase:
-        return search_phrase(storage, query)
-
-    query = text_normalize(query)
-    if not query:
-        return []
-
-    mode = storage.index.get_metadata("tokenizer_mode") or "default"
-    terms = list(dict.fromkeys(
-        term for term, _position in tokenize_with_positions(query, mode)
-        if term.strip()
-    ))
-    if not terms:
-        return []
-
-    postings = {
-        term: (
-            storage.index.lookup_posting(term, storage.index.TITLE),
-            storage.index.lookup_posting(term, storage.index.TEXT),
-        )
-        for term in terms
-    }
-    matches = set(postings[terms[0]][0]) | set(postings[terms[0]][1])
-    for title_posting, text_posting in postings.values():
-        matches &= set(title_posting) | set(text_posting)
-
-    scores = {
-        document_id: sum(
-            2 * len(title_posting.get(document_id, ()))
-            + len(text_posting.get(document_id, ()))
-            for title_posting, text_posting in postings.values()
-        )
-        for document_id in matches
-    }
-
-    return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
-
-
-def search_tf_idf(
-        storage: Storage,
-        query: str,
-) -> list[int]:
-    if storage.index is None:
-        raise ValueError("查询需要 index_db")
-
-    query = text_normalize(query)
-    if not query:
-        return []
-
-    mode = storage.index.get_metadata("tokenizer_mode") or "default"
-    query_terms = [
-        term
-        for term, _ in tokenize_with_positions(query, mode)
-        if term.strip()
-    ]
-
-    if not query_terms:
-        return []
-
-    terms = list(dict.fromkeys(query_terms))
-
-    document_count = storage.index.count_documents()
-    query_tf = Counter(query_terms)
-
-    postings = {
-        term: (
-            storage.index.lookup_posting(term, storage.index.TITLE),
-            storage.index.lookup_posting(term, storage.index.TEXT),
-        )
-        for term in terms
-    }
-
-    idfs = {}
-    for term, (title_posting, text_posting) in postings.items():
-        df = len(set(title_posting) | set(text_posting))
-        idfs[term] = log((document_count + 1) / (df + 1)) + 1.
-    query_weights = {
-        term: (1 + log(query_tf[term])) * idfs[term]
-        for term in terms
-    }
-
-    matches = set(postings[terms[0]][0]) | set(postings[terms[0]][1])
-    for title_posting, text_posting in postings.values():
-        matches |= set(title_posting) | set(text_posting)
-
-    def document_weight(document_id: int, term: str) -> float:
-        title_posting, text_posting = postings[term]
-        tf = (
-            len(title_posting.get(document_id, ()))
-            + len(text_posting.get(document_id, ()))
-        )
-        return (1 + log(tf)) * idfs[term] if tf else 0.
-
-    selected_tf_idf_norm = storage.index.get_tf_idf_norm(matches)
-
-    scores = {
-        document_id: sum(
-            document_weight(document_id, term) * query_weights[term]
-            for term in terms
-        ) / selected_tf_idf_norm[document_id]
-        for document_id in matches
-        if selected_tf_idf_norm.get(document_id, 0.) > 0.
-    }
-
-    return sorted(matches, key=lambda document_id: (-scores[document_id], document_id))
 
 
 def _score_bm25f(
@@ -378,7 +252,17 @@ def search_hybrid(
         ]
 
     candidate_limit = max(100, limit * 5)
-    all_sparse_scores = _score_bm25f(storage, query)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        dense_future = executor.submit(
+            search_dense,
+            query,
+            dense_index,
+            limit=candidate_limit,
+            device=device,
+        )
+        all_sparse_scores = _score_bm25f(storage, query)
+        dense_hits = dense_future.result()
+
     sparse_ids = sorted(
         all_sparse_scores,
         key=lambda document_id: (-all_sparse_scores[document_id], document_id),
@@ -389,12 +273,7 @@ def search_hybrid(
     }
     dense_scores = {
         hit.document_id: hit.score
-        for hit in search_dense(
-            query,
-            dense_index,
-            limit=candidate_limit,
-            device=device,
-        )
+        for hit in dense_hits
     }
     return _fuse_scores(
         sparse_scores,
@@ -416,8 +295,110 @@ def _load_cross_encoder(model_path: str, device: str | None):
         str(path),
         device=device,
         local_files_only=True,
-        max_length=512,
+        max_length=RERANK_MAX_TOKENS,
     )
+
+
+def _rerank_passages(
+    tokenizer: Any,
+    query: str,
+    title: str,
+    text: str,
+) -> list[str]:
+    """Return one or two distinct passages with strong lexical query overlap."""
+
+    title = " ".join(title.split())
+    text = " ".join(text.split())
+    if not title and not text:
+        return []
+
+    query_ids = tokenizer.encode(query, add_special_tokens=False)
+    special_tokens = tokenizer.num_special_tokens_to_add(pair=True)
+    title_ids = tokenizer.encode(title, add_special_tokens=False)[
+        :RERANK_TITLE_MAX_TOKENS
+    ]
+    separator_ids = tokenizer.encode("\n", add_special_tokens=False)
+    prefix_ids = title_ids + separator_ids if title_ids and text else title_ids
+    body_budget = (
+        RERANK_MAX_TOKENS
+        - special_tokens
+        - min(len(query_ids), RERANK_MAX_TOKENS // 2)
+        - len(prefix_ids)
+    )
+
+    if not text or body_budget <= 0:
+        passage = tokenizer.decode(
+            title_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).strip()
+        return [passage] if passage else []
+
+    body_ids = tokenizer.encode(
+        text,
+        add_special_tokens=False,
+        verbose=False,
+    )
+    overlap = min(RERANK_OVERLAP_TOKENS, max(0, body_budget - 1))
+    step = body_budget - overlap
+    passages = []
+
+    for start in range(0, len(body_ids), step):
+        chunk_ids = body_ids[start:start + body_budget]
+        if not chunk_ids:
+            break
+        passage = tokenizer.decode(
+            prefix_ids + chunk_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).strip()
+        if passage:
+            passages.append(passage)
+        if start + body_budget >= len(body_ids):
+            break
+
+    compact_query = "".join(
+        character
+        for character in text_normalize(query)
+        if character.isalnum()
+    )
+    if not compact_query:
+        return passages[:1]
+    query_bigrams = {
+        compact_query[index:index + 2]
+        for index in range(len(compact_query) - 1)
+    }
+
+    def lexical_score(item: tuple[int, str]) -> tuple[bool, int, int, int]:
+        index, passage = item
+        compact_passage = "".join(
+            character
+            for character in text_normalize(passage)
+            if character.isalnum()
+        )
+        return (
+            compact_query in compact_passage,
+            sum(bigram in compact_passage for bigram in query_bigrams),
+            sum(character in compact_passage for character in set(compact_query)),
+            -index,
+        )
+
+    ranked = sorted(enumerate(passages), key=lexical_score, reverse=True)
+    best_index, best_passage = ranked[0]
+    best_exact, best_bigrams, best_characters, _index = lexical_score(ranked[0])
+    if best_exact:
+        return [best_passage]
+
+    best_relevance = 2 * best_bigrams + best_characters
+    for candidate in ranked[1:]:
+        index, passage = candidate
+        if abs(index - best_index) <= 1:
+            continue
+        _exact, bigrams, characters, _index = lexical_score(candidate)
+        relevance = 2 * bigrams + characters
+        if relevance > 0 and relevance >= .8 * best_relevance:
+            return [best_passage, passage]
+    return [best_passage]
 
 
 def search_reranked(
@@ -451,35 +432,45 @@ def search_reranked(
         alpha=alpha,
         device=device,
     )
-    document_ids = []
+    model = _load_cross_encoder(str(Path(reranker_model).resolve()), device)
+    pair_document_ids = []
     pairs = []
     for document_id in candidates:
         document = storage.documents.get(document_id)
         if document is None:
             continue
         _url, title, text, _fetched_at = document
-        passage = "\n".join(filter(None, (
-            " ".join(title.split()),
-            " ".join(text.split()),
-        )))
-        document_ids.append(document_id)
-        pairs.append((query, passage))
+        for passage in _rerank_passages(model.tokenizer, query, title, text):
+            pair_document_ids.append(document_id)
+            pairs.append((query, passage))
 
     if not pairs:
         return []
 
-    model = _load_cross_encoder(str(Path(reranker_model).resolve()), device)
     with _RERANK_LOCK:
         scores = np.asarray(model.predict(
             pairs,
             batch_size=batch_size,
             show_progress_bar=False,
         )).reshape(-1)
-    if len(scores) != len(document_ids):
+    if len(scores) != len(pair_document_ids):
         raise ValueError("Reranker 返回的分数数量不正确")
 
-    order = sorted(
-        range(len(document_ids)),
-        key=lambda index: (-float(scores[index]), index),
-    )
-    return [document_ids[index] for index in order[:limit]]
+    document_scores: dict[int, float] = {}
+    for document_id, score in zip(pair_document_ids, scores, strict=True):
+        document_scores[document_id] = max(
+            document_scores.get(document_id, float("-inf")),
+            float(score),
+        )
+
+    candidate_order = {
+        document_id: index
+        for index, document_id in enumerate(candidates)
+    }
+    return sorted(
+        document_scores,
+        key=lambda document_id: (
+            -document_scores[document_id],
+            candidate_order[document_id],
+        ),
+    )[:limit]

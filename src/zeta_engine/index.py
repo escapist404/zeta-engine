@@ -1,43 +1,10 @@
 import logging
-from math import log, sqrt
 
 from zeta_engine.constants import STOPWORDS_VERSION
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
 
 logger = logging.getLogger(__name__)
-
-
-def update_tf_idf_norms(storage: Storage):
-    if storage.index is None:
-        raise ValueError("更新 TF-IDF 向量范数需要 index_db")
-
-    document_count = storage.index.count_documents()
-    squared_norms = {}
-
-    for _, term, df in storage.index.iter_all_terms():
-        idf = log((document_count + 1) / (df + 1)) + 1.
-
-        title_posting = storage.index.lookup_posting(term, storage.index.TITLE)
-        text_posting = storage.index.lookup_posting(term, storage.index.TEXT)
-
-        document_ids = set(title_posting) | set(text_posting)
-
-        for document_id in document_ids:
-            title_tf = len(title_posting.get(document_id, ()))
-            text_tf = len(text_posting.get(document_id, ()))
-            tf = title_tf + text_tf 
-            weight = (1. + log(tf)) * idf
-            squared_norms[document_id] = (
-                squared_norms.get(document_id, 0.) + weight ** 2
-            )
-
-    norms = {
-        document_id: sqrt(squared_norm)
-        for document_id, squared_norm in squared_norms.items()
-    }
-
-    storage.index.set_tf_idf_norm(norms)
 
 
 def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
@@ -99,7 +66,5 @@ def build_index(storage: Storage, mode: str = "default") -> dict[str, int]:
 
     index.set_metadata("tokenizer_mode", mode)
     index.set_metadata("stopwords_version", STOPWORDS_VERSION)
-
-    update_tf_idf_norms(storage)
 
     return stats

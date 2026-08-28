@@ -77,18 +77,19 @@ uv run hf download BAAI/bge-reranker-base \
 ```bash
 uv run zeta-engine search "中国人民大学"
 uv run zeta-engine search "中国人民大学" --phrase --limit 20
-uv run zeta-engine search "中国人民大学" --ranking tf-idf
 uv run zeta-engine search "中国人民大学" --ranking bm25f
 uv run zeta-engine search "经济困难学生如何获得帮助" --ranking dense --device mps
 uv run zeta-engine search "经济困难学生如何获得帮助" --ranking hybrid --alpha 0.5 --device mps
 uv run zeta-engine search "经济困难学生如何获得帮助" --ranking rerank --device mps
 ```
 
-普通查询会分词并要求所有词都命中；`--ranking` 可选 `simple`、`tf-idf`、
-`bm25f`、`dense`、`hybrid` 或 `rerank`，默认为 `hybrid`。Hybrid 将两路分数分别做
+`--ranking` 可选 `bm25f`、`dense`、`hybrid` 或 `rerank`，默认为 `hybrid`。
+Hybrid 将两路分数分别做
 min-max 归一化后线性融合；
 `--alpha 0` 等于 BM25F，`--alpha 1` 等于 Dense，默认为 `0.5`。
-`rerank` 默认使用 CrossEncoder 对 Hybrid 的前 50 个候选重新排序；可用
+`rerank` 默认将 Hybrid 的前 50 个候选切成重叠 passage，按 query 的连续字符
+匹配动态选出每篇文档最相关的 1–2 个 passage，再由 CrossEncoder 打分并以 MaxP
+聚合；可用
 `--rerank-candidates`、`--reranker-batch-size` 和 `--reranker-model` 调整。
 `--phrase` 要求词和位置连续匹配。
 
