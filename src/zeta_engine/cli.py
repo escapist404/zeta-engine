@@ -14,6 +14,7 @@ from zeta_engine.web import serve
 def configure_logging(log_file: Path) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
+        force=True,
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -23,6 +24,7 @@ def configure_logging(log_file: Path) -> None:
         ],
     )
     logging.getLogger("jieba").setLevel(logging.INFO)
+
 
 def run_crawler(args: argparse.Namespace) -> int:
     args.document_db.parent.mkdir(parents=True, exist_ok=True)
