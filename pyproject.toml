@@ -7,8 +7,12 @@ requires-python = ">=3.13"
 dependencies = [
     "argparse>=1.4.0",
     "beautifulsoup4>=4.15.0",
+    "huggingface-hub>=1.29.0",
     "jieba>=0.42.1",
+    "numpy>=2.5.2",
     "requests>=2.34.2",
+    "resiliparse>=1.0.9",
+    "sentence-transformers>=6.0.0",
     "url-normalize>=3.0.0",
 ]
 

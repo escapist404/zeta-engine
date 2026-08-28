@@ -13,5 +13,8 @@ wheels/
 data
 logs/
 
+# Local embedding models
+models/
+
 # Misc
 .DS_Store
