@@ -124,7 +124,7 @@ Hybrid 接口示例为
 `GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
 CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
 RAG 可在页面下拉菜单中选择，也可使用
-`GET /api/search?q=问题&ranking=rag`；默认返回模型回答和 5 条 Dense 来源。
+`GET /api/search?q=问题&ranking=rag`；默认返回模型回答和 5 条 Hybrid 来源。
 
 ### 统计
 

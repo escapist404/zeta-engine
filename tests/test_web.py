@@ -11,10 +11,19 @@ from urllib.request import urlopen
 from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
 from zeta_engine.storage import Storage
-from zeta_engine.web import create_server
+from zeta_engine.web import _query_snippet, create_server
 
 
 class WebTest(unittest.TestCase):
+    def test_query_snippet_focuses_on_matching_text(self) -> None:
+        snippet = _query_snippet(
+            "目标证据",
+            "无关开头" * 100 + "目标证据" + "无关结尾" * 100,
+        )
+
+        self.assertIn("目标证据", snippet)
+        self.assertLessEqual(len(snippet), 240)
+
     def test_serves_frontend_and_search_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document_db = Path(directory) / "documents.db"
@@ -76,14 +85,18 @@ class WebTest(unittest.TestCase):
                 )
 
                 with patch(
-                    "zeta_engine.web.search_hybrid",
-                    return_value=[1],
+                    "zeta_engine.web.search_hybrid_with_snippets",
+                    return_value=([1], {1: "Hybrid 命中１０"}),
                 ) as search_hybrid:
                     with urlopen(
                         f"{base_url}/api/search?q=test&alpha=0.7"
                     ) as response:
                         hybrid_payload = json.load(response)
                 self.assertEqual(hybrid_payload["count"], 1)
+                self.assertEqual(
+                    hybrid_payload["results"][0]["snippet"],
+                    "hybrid 命中10",
+                )
                 self.assertEqual(search_hybrid.call_args.kwargs["alpha"], .7)
                 self.assertEqual(search_hybrid.call_args.kwargs["limit"], 20)
 
@@ -126,6 +139,16 @@ class WebTest(unittest.TestCase):
                 self.assertEqual(rag_payload["count"], 1)
                 self.assertEqual(rag_answer.call_args.args[0], "test")
                 self.assertEqual(rag_answer.call_args.kwargs["top_k"], 5)
+                rag_search_fn = rag_answer.call_args.args[1]
+                with patch(
+                    "zeta_engine.web.search_documents",
+                    return_value=[],
+                ) as search_documents:
+                    rag_search_fn("evidence", 3)
+                self.assertEqual(
+                    search_documents.call_args.kwargs["ranking"],
+                    "hybrid",
+                )
 
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base_url}/api/search?q=test&limit=nope")

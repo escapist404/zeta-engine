@@ -11,13 +11,40 @@ from zeta_engine.search import (
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
     search_bm25f,
-    search_hybrid,
+    search_hybrid_with_snippets,
     search_reranked,
 )
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize
+from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
 
 logger = logging.getLogger(__name__)
+
+
+def _query_snippet(query: str, text: str, limit: int = 240) -> str:
+    text = text_normalize(text)
+    if len(text) <= limit:
+        return text
+
+    terms = list(dict.fromkeys(
+        term
+        for term, _offset in tokenize_with_positions(
+            text_normalize(query),
+            mode="search",
+        )
+    ))
+    starts = {0}
+    for term in terms:
+        offset = 0
+        while (position := text.find(term, offset)) >= 0:
+            starts.add(max(0, min(position - limit // 3, len(text) - limit)))
+            offset = position + len(term)
+
+    def score(start: int) -> tuple[int, int]:
+        window = text[start:start + limit]
+        return sum(len(term) * window.count(term) for term in terms), -start
+
+    start = max(starts, key=score)
+    return text[start:start + limit]
 
 
 def search_documents(
@@ -52,7 +79,7 @@ def search_documents(
         elif ranking == "bm25f":
             document_ids = search_bm25f(storage, query)[:limit]
         elif ranking == "hybrid":
-            document_ids = search_hybrid(
+            document_ids, snippets = search_hybrid_with_snippets(
                 storage,
                 query,
                 dense_index,
@@ -85,7 +112,7 @@ def search_documents(
                 "title": text_normalize(title) or url,
                 "url": url,
                 "snippet": text_normalize(
-                    snippets.get(document_id, text),
+                    snippets.get(document_id) or _query_snippet(query, text),
                 )[:240],
             })
         return results
@@ -157,9 +184,10 @@ def create_server(
                             index_db,
                             search_query,
                             top_k,
-                            ranking="dense",
+                            ranking="hybrid",
                             dense_index=dense_index,
                             device=device,
+                            alpha=alpha,
                         )
 
                     payload = rag_answer(query, search_fn, top_k=limit)

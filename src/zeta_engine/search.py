@@ -223,7 +223,7 @@ def _fuse_scores(
     )[:limit]
 
 
-def search_hybrid(
+def search_hybrid_with_snippets(
     storage: Storage,
     query: str,
     dense_index: str | Path = DEFAULT_INDEX_DIR,
@@ -231,25 +231,26 @@ def search_hybrid(
     limit: int = 20,
     alpha: float = .5,
     device: str | None = None,
-) -> list[int]:
-    """Combine per-query normalized BM25F and Dense scores linearly."""
+) -> tuple[list[int], dict[int, str]]:
+    """Return fused document IDs and available Dense snippets."""
 
     if not 0. <= alpha <= 1.:
         raise ValueError("alpha 必须在 0 到 1 之间")
     if limit <= 0:
-        return []
+        return [], {}
     if alpha == 0.:
-        return search_bm25f(storage, query)[:limit]
+        return search_bm25f(storage, query)[:limit], {}
     if alpha == 1.:
-        return [
-            hit.document_id
-            for hit in search_dense(
-                query,
-                dense_index,
-                limit=limit,
-                device=device,
-            )
-        ]
+        dense_hits = search_dense(
+            query,
+            dense_index,
+            limit=limit,
+            device=device,
+        )
+        return (
+            [hit.document_id for hit in dense_hits],
+            {hit.document_id: hit.snippet for hit in dense_hits},
+        )
 
     candidate_limit = max(100, limit * 5)
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -275,12 +276,37 @@ def search_hybrid(
         hit.document_id: hit.score
         for hit in dense_hits
     }
-    return _fuse_scores(
-        sparse_scores,
-        dense_scores,
-        alpha=alpha,
-        limit=limit,
+    return (
+        _fuse_scores(
+            sparse_scores,
+            dense_scores,
+            alpha=alpha,
+            limit=limit,
+        ),
+        {hit.document_id: hit.snippet for hit in dense_hits},
     )
+
+
+def search_hybrid(
+    storage: Storage,
+    query: str,
+    dense_index: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    limit: int = 20,
+    alpha: float = .5,
+    device: str | None = None,
+) -> list[int]:
+    """Combine per-query normalized BM25F and Dense scores linearly."""
+
+    document_ids, _snippets = search_hybrid_with_snippets(
+        storage,
+        query,
+        dense_index,
+        limit=limit,
+        alpha=alpha,
+        device=device,
+    )
+    return document_ids
 
 
 @lru_cache(maxsize=2)

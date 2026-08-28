@@ -8,6 +8,7 @@ from zeta_engine.search import (
     _fuse_scores,
     search_bm25f,
     search_hybrid,
+    search_hybrid_with_snippets,
     search_phrase,
     search_reranked,
 )
@@ -76,6 +77,24 @@ class IndexTest(unittest.TestCase):
             limit=100,
             device="cpu",
         )
+
+    def test_hybrid_preserves_dense_snippets(self) -> None:
+        with (
+            patch("zeta_engine.search._score_bm25f", return_value={1: 2.}),
+            patch(
+                "zeta_engine.search.search_dense",
+                return_value=[DenseHit(2, .9, "相关片段")],
+            ),
+        ):
+            document_ids, snippets = search_hybrid_with_snippets(
+                Mock(),
+                "query",
+                Path("dense"),
+                limit=2,
+            )
+
+        self.assertEqual(document_ids, [1, 2])
+        self.assertEqual(snippets, {2: "相关片段"})
 
     def test_cross_encoder_reranks_hybrid_candidates(self) -> None:
         with Storage(document_db=":memory:") as storage:
