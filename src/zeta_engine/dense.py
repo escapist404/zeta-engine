@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_PATH = Path("models/bge-small-zh-v1.5")
 DEFAULT_INDEX_DIR = Path("data/dense")
 QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EMBEDDING_DIMENSION = 512
 MAX_TOKENS = 384
 TITLE_MAX_TOKENS = 64
@@ -39,14 +39,6 @@ def _normalize_text(text: str) -> str:
     return text_normalize(text)
 
 
-def _decode(tokenizer: Any, token_ids: list[int]) -> str:
-    return tokenizer.decode(
-        token_ids,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    ).strip()
-
-
 def _chunk_document(
     tokenizer: Any,
     title: str,
@@ -64,26 +56,35 @@ def _chunk_document(
         return []
 
     special_tokens = tokenizer.num_special_tokens_to_add(pair=False)
-    title_ids = tokenizer.encode(title, add_special_tokens=False)[:title_max_tokens]
+    title_encoding = tokenizer(
+        title,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+    )
+    title_offsets = title_encoding["offset_mapping"][:title_max_tokens]
+    short_title = title[:title_offsets[-1][1]] if title_offsets else ""
 
     if not text:
-        passage_ids = (
-            tokenizer.encode("标题：", add_special_tokens=False)
-            + title_ids
-        )[:max_tokens - special_tokens]
-        passage = _decode(tokenizer, passage_ids)
-        return [(passage, title)] if passage else []
+        passage = f"标题：{short_title}"
+        passage_ids = tokenizer.encode(passage, add_special_tokens=False)
+        if len(passage_ids) + special_tokens > max_tokens:
+            raise ValueError("标题超出 token 限制")
+        return [(passage, short_title)] if short_title else []
 
-    prefix_ids = (
-        tokenizer.encode("标题：", add_special_tokens=False)
-        + title_ids
-        + tokenizer.encode("\n正文：", add_special_tokens=False)
-    )
+    prefix = f"标题：{short_title}\n正文："
+    prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
     body_budget = max_tokens - special_tokens - len(prefix_ids)
     if body_budget <= overlap_tokens:
         raise ValueError("标题和前缀占用的 token 过多，无法分块")
 
-    body_ids = tokenizer.encode(text, add_special_tokens=False)
+    body_encoding = tokenizer(
+        text,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+        verbose=False,
+    )
+    body_ids = body_encoding["input_ids"]
+    body_offsets = body_encoding["offset_mapping"]
     step = body_budget - overlap_tokens
     chunks = []
 
@@ -92,8 +93,9 @@ def _chunk_document(
         if not chunk_ids:
             break
 
-        passage = _decode(tokenizer, prefix_ids + chunk_ids)
-        snippet = _decode(tokenizer, chunk_ids)
+        chunk_offsets = body_offsets[start:start + len(chunk_ids)]
+        snippet = text[chunk_offsets[0][0]:chunk_offsets[-1][1]].strip()
+        passage = prefix + snippet
         if passage and snippet:
             chunks.append((passage, snippet))
         if start + body_budget >= len(body_ids):
@@ -173,6 +175,13 @@ def build_dense_index(
     model_path = Path(model_path)
     model = _load_model(str(model_path), device)
     tokenizer = model.tokenizer
+    if not getattr(tokenizer, "is_fast", False):
+        from transformers import BertTokenizerFast
+
+        tokenizer = BertTokenizerFast.from_pretrained(
+            str(model_path),
+            local_files_only=True,
+        )
     dimension = model.get_embedding_dimension()
     if dimension != EMBEDDING_DIMENSION:
         raise ValueError(
@@ -397,7 +406,7 @@ def search_dense(
         hits.append(DenseHit(
             document_id=document_id,
             score=float(scores[row_index]),
-            snippet=str(record["text"]),
+            snippet=text_normalize(str(record["text"])),
         ))
         if len(hits) == limit:
             break

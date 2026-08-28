@@ -11,6 +11,25 @@ from zeta_engine.storage import Storage
 
 
 class FakeTokenizer:
+    is_fast = True
+
+    def __call__(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool,
+        return_offsets_mapping: bool,
+        verbose: bool = True,
+    ) -> dict[str, list]:
+        del add_special_tokens, return_offsets_mapping, verbose
+        return {
+            "input_ids": [ord(character) for character in text],
+            "offset_mapping": [
+                (index, index + 1)
+                for index in range(len(text))
+            ],
+        }
+
     def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
         del add_special_tokens
         return [ord(character) for character in text]
@@ -23,7 +42,7 @@ class FakeTokenizer:
         clean_up_tokenization_spaces: bool,
     ) -> str:
         del skip_special_tokens, clean_up_tokenization_spaces
-        return "".join(chr(token_id) for token_id in token_ids)
+        return " ".join(chr(token_id) for token_id in token_ids)
 
     def num_special_tokens_to_add(self, *, pair: bool) -> int:
         del pair
@@ -173,7 +192,7 @@ class DenseTest(unittest.TestCase):
             vectors[2, :2] = (0.6, 0.8)
             records = [
                 {"document_id": 1, "chunk_index": 0, "text": "次优分块"},
-                {"document_id": 1, "chunk_index": 1, "text": "最佳分块"},
+                {"document_id": 1, "chunk_index": 1, "text": "最佳分块１０"},
                 {"document_id": 2, "chunk_index": 0, "text": "第二篇"},
             ]
             write_index(index_dir, vectors, records)
@@ -183,7 +202,7 @@ class DenseTest(unittest.TestCase):
                 limited = dense.search_dense("甲", index_dir, limit=1)
 
             self.assertEqual([hit.document_id for hit in hits], [1, 2])
-            self.assertEqual(hits[0].snippet, "最佳分块")
+            self.assertEqual(hits[0].snippet, "最佳分块10")
             self.assertAlmostEqual(hits[0].score, 1.0)
             self.assertEqual(limited, [hits[0]])
             self.assertEqual(dense.search_dense(" ", index_dir), [])
