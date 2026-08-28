@@ -102,8 +102,8 @@ export ZETA_LLM_API_KEY="你的 API Key"
 uv run zeta-engine rag "经济困难学生如何申请资助？" --device mps
 ```
 
-RAG 默认使用 Dense 检索前 5 条结果，并在回答后保留普通搜索结果。可调整
-Top-K 和底层排名方式：
+RAG 最多运行两轮：首轮检索原问题，证据不足时由 Agent 生成最多 3 个
+补充查询，第二轮必须回答。CLI 默认使用 Dense，可调整 Top-K 和底层排名方式：
 
 ```bash
 uv run zeta-engine rag "问题" --top-k 8 --ranking hybrid --alpha 0.5
@@ -124,7 +124,7 @@ Hybrid 接口示例为
 `GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
 CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
 RAG 可在页面下拉菜单中选择，也可使用
-`GET /api/search?q=问题&ranking=rag`；默认返回模型回答和 5 条 Hybrid 来源。
+`GET /api/search?q=问题&ranking=rag`；Agent 使用 Hybrid 检索，返回模型回答和两轮中实际使用的来源。
 
 ### 统计
 

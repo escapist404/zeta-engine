@@ -11,7 +11,8 @@ from urllib.request import urlopen
 from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
 from zeta_engine.storage import Storage
-from zeta_engine.web import _query_snippet, create_server
+from zeta_engine.tokenizer import text_normalize
+from zeta_engine.web import _query_snippet, create_server, search_documents
 
 
 class WebTest(unittest.TestCase):
@@ -23,6 +24,38 @@ class WebTest(unittest.TestCase):
 
         self.assertIn("目标证据", snippet)
         self.assertLessEqual(len(snippet), 240)
+
+    def test_rag_content_prefers_complete_lexical_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            document_db = Path(directory) / "documents.db"
+            index_db = Path(directory) / "index.db"
+            text = (
+                "个人简介。教授课程：《人工智能综合设计》大一夏季学期。"
+                + "其他介绍。" * 100
+            )
+            with Storage(document_db=document_db) as storage:
+                assert storage.documents is not None
+                document_id = storage.documents.save(
+                    url="https://example.test/teacher",
+                    title="教师主页",
+                    text=text,
+                    fetched_at="2026-08-28T10:00:00",
+                )
+
+            with patch(
+                "zeta_engine.web.search_hybrid_with_snippets",
+                return_value=([document_id], {document_id: "无关论文成果"}),
+            ):
+                results = search_documents(
+                    document_db,
+                    index_db,
+                    "教授课程 夏季",
+                    ranking="hybrid",
+                    content_limit=3000,
+                )
+
+            self.assertIn("人工智能综合设计", results[0]["snippet"])
+            self.assertEqual(results[0]["content"], text_normalize(text))
 
     def test_serves_frontend_and_search_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -124,7 +157,7 @@ class WebTest(unittest.TestCase):
                     "snippet": "RAG 相关片段",
                 }]
                 with patch(
-                    "zeta_engine.web.rag_answer",
+                    "zeta_engine.web.agentic_rag_answer",
                     return_value={
                         "answer": "这是模型回答。[文档1]",
                         "results": rag_results,
@@ -148,6 +181,10 @@ class WebTest(unittest.TestCase):
                 self.assertEqual(
                     search_documents.call_args.kwargs["ranking"],
                     "hybrid",
+                )
+                self.assertEqual(
+                    search_documents.call_args.kwargs["content_limit"],
+                    3000,
                 )
 
                 with self.assertRaises(HTTPError) as error:

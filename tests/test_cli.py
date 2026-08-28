@@ -76,7 +76,7 @@ class CliTest(unittest.TestCase):
             ])
             with (
                 patch(
-                    "zeta_engine.cli.rag_answer",
+                    "zeta_engine.cli.agentic_rag_answer",
                     return_value={
                         "answer": "可以申请。[文档1]",
                         "results": [result],
@@ -109,6 +109,7 @@ class CliTest(unittest.TestCase):
                 reranker_batch_size=16,
                 device="mps",
                 alpha=.5,
+                content_limit=3000,
             )
 
     def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:

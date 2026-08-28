@@ -13,7 +13,7 @@ from zeta_engine.dense import (
 )
 from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation
 from zeta_engine.index import build_index
-from zeta_engine.rag import rag_answer
+from zeta_engine.rag import agentic_rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -243,10 +243,11 @@ def run_rag(args: argparse.Namespace) -> int:
             reranker_batch_size=DEFAULT_RERANK_BATCH_SIZE,
             device=args.device,
             alpha=args.alpha,
+            content_limit=3000,
         )
 
     try:
-        response = rag_answer(args.query, search_fn, top_k=args.top_k)
+        response = agentic_rag_answer(args.query, search_fn, top_k=args.top_k)
     except RuntimeError as error:
         raise SystemExit(str(error)) from error
     print(f"回答\n{response['answer']}\n")

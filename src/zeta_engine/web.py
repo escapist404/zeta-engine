@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
-from zeta_engine.rag import rag_answer
+from zeta_engine.rag import agentic_rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -20,18 +20,26 @@ from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
 logger = logging.getLogger(__name__)
 
 
-def _query_snippet(query: str, text: str, limit: int = 240) -> str:
-    text = text_normalize(text)
-    if len(text) <= limit:
-        return text
-
-    terms = list(dict.fromkeys(
+def _query_terms(query: str) -> list[str]:
+    return list(dict.fromkeys(
         term
         for term, _offset in tokenize_with_positions(
             text_normalize(query),
             mode="search",
         )
     ))
+
+
+def _lexical_score(text: str, terms: list[str]) -> int:
+    return sum(len(term) * text.count(term) for term in terms)
+
+
+def _query_snippet(query: str, text: str, limit: int = 240) -> str:
+    text = text_normalize(text)
+    if len(text) <= limit:
+        return text
+
+    terms = _query_terms(query)
     starts = {0}
     for term in terms:
         offset = 0
@@ -41,7 +49,7 @@ def _query_snippet(query: str, text: str, limit: int = 240) -> str:
 
     def score(start: int) -> tuple[int, int]:
         window = text[start:start + limit]
-        return sum(len(term) * window.count(term) for term in terms), -start
+        return _lexical_score(window, terms), -start
 
     start = max(starts, key=score)
     return text[start:start + limit]
@@ -60,7 +68,11 @@ def search_documents(
     reranker_batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
     device: str | None = None,
     alpha: float = .5,
+    content_limit: int = 0,
 ) -> list[dict[str, str]]:
+    if content_limit < 0:
+        raise ValueError("content_limit 不能小于 0")
+
     with Storage(
         document_db=document_db,
         index_db=index_db if ranking != "dense" else None,
@@ -103,18 +115,34 @@ def search_documents(
             raise ValueError(f"不支持的排名方式: {ranking}")
 
         results = []
+        terms = _query_terms(query)
         for document_id in document_ids:
             document = storage.documents.get(document_id)
             if document is None:
                 continue
             url, title, text, _fetched_at = document
-            results.append({
+            dense_text = text_normalize(snippets.get(document_id, ""))
+            dense_snippet = _query_snippet(query, dense_text)
+            lexical_snippet = _query_snippet(query, text)
+            snippet = max(
+                (item for item in (dense_snippet, lexical_snippet) if item),
+                key=lambda item: _lexical_score(item, terms),
+                default="",
+            )
+            result = {
                 "title": text_normalize(title) or url,
                 "url": url,
-                "snippet": text_normalize(
-                    snippets.get(document_id) or _query_snippet(query, text),
-                )[:240],
-            })
+                "snippet": snippet[:240],
+            }
+            if content_limit:
+                lexical_content = _query_snippet(query, text, content_limit)
+                dense_content = _query_snippet(query, dense_text, content_limit)
+                result["content"] = max(
+                    (item for item in (lexical_content, dense_content) if item),
+                    key=lambda item: _lexical_score(item, terms),
+                    default="",
+                )
+            results.append(result)
         return results
 
 
@@ -188,9 +216,10 @@ def create_server(
                             dense_index=dense_index,
                             device=device,
                             alpha=alpha,
+                            content_limit=3000,
                         )
 
-                    payload = rag_answer(query, search_fn, top_k=limit)
+                    payload = agentic_rag_answer(query, search_fn, top_k=limit)
                     results = payload["results"]
                     self._json({
                         "query": query,
