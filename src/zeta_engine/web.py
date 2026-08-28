@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
+from zeta_engine.rag import rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -119,18 +120,23 @@ def create_server(
                 self._json({"error": "请输入搜索内容"}, 400)
                 return
 
+            ranking = parameters.get("ranking", ["hybrid"])[0]
+            if ranking not in {"bm25f", "dense", "hybrid", "rerank", "rag"}:
+                self._json({
+                    "error": "ranking 必须是 bm25f、dense、hybrid、rerank 或 rag"
+                }, 400)
+                return
+
             try:
-                limit = min(max(int(parameters.get("limit", ["20"])[0]), 1), 100)
+                default_limit = "5" if ranking == "rag" else "20"
+                limit = min(
+                    max(int(parameters.get("limit", [default_limit])[0]), 1),
+                    100,
+                )
             except ValueError:
                 self._json({"error": "limit 必须是整数"}, 400)
                 return
 
-            ranking = parameters.get("ranking", ["hybrid"])[0]
-            if ranking not in {"bm25f", "dense", "hybrid", "rerank"}:
-                self._json({
-                    "error": "ranking 必须是 bm25f、dense、hybrid 或 rerank"
-                }, 400)
-                return
             try:
                 alpha = float(parameters.get("alpha", ["0.5"])[0])
             except ValueError:
@@ -141,6 +147,31 @@ def create_server(
                 return
 
             try:
+                if ranking == "rag":
+                    def search_fn(
+                        search_query: str,
+                        top_k: int,
+                    ) -> list[dict[str, str]]:
+                        return search_documents(
+                            document_db,
+                            index_db,
+                            search_query,
+                            top_k,
+                            ranking="dense",
+                            dense_index=dense_index,
+                            device=device,
+                        )
+
+                    payload = rag_answer(query, search_fn, top_k=limit)
+                    results = payload["results"]
+                    self._json({
+                        "query": query,
+                        "answer": payload["answer"],
+                        "count": len(results),
+                        "results": results,
+                    })
+                    return
+
                 results = search_documents(
                     document_db,
                     index_db,

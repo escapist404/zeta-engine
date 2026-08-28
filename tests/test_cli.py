@@ -53,6 +53,64 @@ class CliTest(unittest.TestCase):
                 alpha=.5,
             )
 
+    def test_runs_rag_from_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document_db = root / "documents.db"
+            dense_index = root / "dense"
+            document_db.touch()
+            dense_index.mkdir()
+            (dense_index / "metadata.json").touch()
+            result = {
+                "title": "资助政策",
+                "url": "https://example.test/policy",
+                "snippet": "学生可以申请。",
+            }
+
+            args = build_parser().parse_args([
+                "rag", "如何申请资助？",
+                "--document-db", str(document_db),
+                "--dense-index", str(dense_index),
+                "--top-k", "3",
+                "--device", "mps",
+            ])
+            with (
+                patch(
+                    "zeta_engine.cli.rag_answer",
+                    return_value={
+                        "answer": "可以申请。[文档1]",
+                        "results": [result],
+                    },
+                ) as rag_answer,
+                redirect_stdout(output := io.StringIO()),
+            ):
+                self.assertEqual(args.handler(args), 0)
+
+            self.assertIn("可以申请。[文档1]", output.getvalue())
+            self.assertIn("https://example.test/policy", output.getvalue())
+            self.assertEqual(rag_answer.call_args.args[0], "如何申请资助？")
+            self.assertEqual(rag_answer.call_args.kwargs["top_k"], 3)
+
+            search_fn = rag_answer.call_args.args[1]
+            with patch(
+                "zeta_engine.cli.search_documents",
+                return_value=[result],
+            ) as search_documents:
+                self.assertEqual(search_fn("查询", 2), [result])
+            search_documents.assert_called_once_with(
+                document_db,
+                Path("data/index.db"),
+                "查询",
+                2,
+                ranking="dense",
+                dense_index=dense_index,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
+                device="mps",
+                alpha=.5,
+            )
+
     def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

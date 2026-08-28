@@ -13,6 +13,7 @@ from zeta_engine.dense import (
 )
 from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation
 from zeta_engine.index import build_index
+from zeta_engine.rag import rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -24,7 +25,7 @@ from zeta_engine.search import (
 )
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import text_normalize
-from zeta_engine.web import serve
+from zeta_engine.web import search_documents, serve
 
 
 def configure_logging(log_file: Path) -> None:
@@ -209,6 +210,53 @@ def run_search(args: argparse.Namespace) -> int:
             snippet = text_normalize(snippets.get(document_id, text))[:160]
             print(f"{rank}. {title}\n   {url}\n   {snippet}\n")
 
+    return 0
+
+
+def run_rag(args: argparse.Namespace) -> int:
+    if not args.document_db.is_file():
+        raise SystemExit(f"数据库不存在: {args.document_db}")
+    if args.ranking != "dense" and not args.index_db.is_file():
+        raise SystemExit(f"数据库不存在: {args.index_db}")
+    if (
+        args.ranking in {"dense", "hybrid", "rerank"}
+        and not (args.dense_index / "metadata.json").is_file()
+    ):
+        raise SystemExit(f"Dense 索引不存在: {args.dense_index}")
+    if args.ranking == "rerank" and not args.reranker_model.is_dir():
+        raise SystemExit(f"Reranker 模型目录不存在: {args.reranker_model}")
+    if not 0. <= args.alpha <= 1.:
+        raise SystemExit("--alpha 需要在 0 到 1 之间")
+    if args.top_k <= 0:
+        raise SystemExit("--top-k 必须大于 0")
+
+    def search_fn(query: str, top_k: int) -> list[dict[str, str]]:
+        return search_documents(
+            args.document_db,
+            args.index_db,
+            query,
+            top_k,
+            ranking=args.ranking,
+            dense_index=args.dense_index,
+            reranker_model=args.reranker_model,
+            rerank_candidates=DEFAULT_RERANK_CANDIDATES,
+            reranker_batch_size=DEFAULT_RERANK_BATCH_SIZE,
+            device=args.device,
+            alpha=args.alpha,
+        )
+
+    try:
+        response = rag_answer(args.query, search_fn, top_k=args.top_k)
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
+    print(f"回答\n{response['answer']}\n")
+    print("搜索结果")
+    for rank, result in enumerate(response["results"], start=1):
+        print(
+            f"{rank}. {result['title']}\n"
+            f"   {result['url']}\n"
+            f"   {result['snippet']}\n"
+        )
     return 0
 
 
@@ -404,6 +452,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--limit", type=int, default=20)
     search.set_defaults(handler=run_search)
+
+    rag = commands.add_parser("rag", help="检索并生成回答")
+    rag.add_argument("query", help="问题文本")
+    rag.add_argument("--top-k", type=int, default=5)
+    rag.add_argument(
+        "--ranking",
+        choices=("bm25f", "dense", "hybrid", "rerank"),
+        default="dense",
+        help="用于提供证据的排名算法",
+    )
+    rag.add_argument(
+        "--document-db",
+        type=Path,
+        default=Path("data/zeta.db"),
+    )
+    rag.add_argument(
+        "--index-db",
+        type=Path,
+        default=Path("data/index.db"),
+    )
+    rag.add_argument(
+        "--dense-index",
+        type=Path,
+        default=DEFAULT_INDEX_DIR,
+    )
+    rag.add_argument(
+        "--reranker-model",
+        type=Path,
+        default=DEFAULT_RERANKER_MODEL_PATH,
+    )
+    rag.add_argument("--device")
+    rag.add_argument("--alpha", type=float, default=.5)
+    rag.set_defaults(handler=run_rag)
 
     server = commands.add_parser("serve", help="启动 Web 搜索服务")
     server.add_argument("--host", default="127.0.0.1")

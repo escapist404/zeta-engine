@@ -25,6 +25,12 @@
     button:disabled { cursor: wait; opacity: .55; }
     svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
     #status { min-height: 24px; margin: 34px 2px 10px; color: #625e57; font-size: .73rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+    #answer { position: relative; margin: 12px 0 34px; padding: 32px 40px; background: #faf7f2; box-shadow: inset 0 0 0 1px #dfd7cc; }
+    #answer[hidden] { display: none; }
+    #answer::before, #answer::after { position: absolute; color: #d97757; font-family: Georgia, "Times New Roman", serif; font-size: 2.5rem; line-height: 1; }
+    #answer::before { top: 8px; left: 10px; content: "「"; }
+    #answer::after { right: 10px; bottom: 8px; content: "」"; }
+    #answer-text { margin: 0; color: #2d2b28; font-family: Georgia, "Times New Roman", "Noto Serif SC", serif; line-height: 1.8; white-space: pre-wrap; }
     #results { margin: 0; padding: 0; list-style: none; }
     .result { padding: 24px 2px 26px; border-top: 1px solid #c9c1b7; }
     .result a { color: #191918; font-family: Georgia, "Times New Roman", "Noto Serif SC", serif; font-size: 1.35rem; font-weight: 400; line-height: 1.35; text-decoration-thickness: 1px; text-underline-offset: 4px; }
@@ -39,6 +45,7 @@
       form { min-height: 66px; padding: 7px 7px 7px 17px; box-shadow: 6px 6px 0 #dfd7cc; }
       form:focus-within { box-shadow: 8px 8px 0 #dfd7cc; }
       button { width: 50px; height: 50px; }
+      #answer { padding: 30px 30px; }
     }
     @media (prefers-reduced-motion: reduce) { main, form, button { transition: none; } }
   </style>
@@ -53,6 +60,7 @@
         <option value="dense">Dense</option>
         <option value="hybrid" selected>Hybrid</option>
         <option value="rerank">Reranker</option>
+        <option value="rag">RAG</option>
       </select>
       <button type="submit" aria-label="提交搜索">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -62,6 +70,9 @@
       </button>
     </form>
     <div id="status" role="status" aria-live="polite"></div>
+    <section id="answer" aria-label="模型回答" hidden>
+      <p id="answer-text"></p>
+    </section>
     <ol id="results"></ol>
   </main>
   <script>
@@ -71,7 +82,14 @@
     const ranking = document.querySelector("#ranking");
     const button = document.querySelector("button");
     const status = document.querySelector("#status");
+    const answer = document.querySelector("#answer");
+    const answerText = document.querySelector("#answer-text");
     const list = document.querySelector("#results");
+
+    function showAnswer(text) {
+      answerText.textContent = text || "";
+      answer.hidden = !text;
+    }
 
     function showResults(results) {
       list.replaceChildren(...results.map(result => {
@@ -96,6 +114,7 @@
       main.classList.add("has-results");
       status.className = "";
       status.textContent = "正在搜索…";
+      showAnswer("");
       list.replaceChildren();
       button.disabled = true;
       if (updateHistory) {
@@ -106,7 +125,10 @@
         const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&ranking=${rankingMode}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "搜索失败");
-        status.textContent = data.count ? `找到 ${data.count} 条结果` : "没有找到相关结果";
+        status.textContent = data.answer
+          ? `已生成回答 · ${data.count} 条来源`
+          : data.count ? `找到 ${data.count} 条结果` : "没有找到相关结果";
+        showAnswer(data.answer);
         showResults(data.results);
       } catch (error) {
         status.className = "error";
@@ -124,7 +146,7 @@
     const initialParameters = new URLSearchParams(location.search);
     const initialQuery = initialParameters.get("q");
     const initialRanking = initialParameters.get("ranking");
-    if (["bm25f", "dense", "hybrid", "rerank"].includes(initialRanking)) ranking.value = initialRanking;
+    if (["bm25f", "dense", "hybrid", "rerank", "rag"].includes(initialRanking)) ranking.value = initialRanking;
     if (initialQuery) {
       input.value = initialQuery;
       search(initialQuery, false);

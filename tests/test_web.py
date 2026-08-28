@@ -43,6 +43,9 @@ class WebTest(unittest.TestCase):
                     frontend_html = response.read().decode()
                 self.assertIn("<span>ζ</span>engine", frontend_html)
                 self.assertIn('value="hybrid" selected', frontend_html)
+                self.assertIn('value="rag"', frontend_html)
+                self.assertIn('id="answer"', frontend_html)
+                self.assertIn('content: "「"', frontend_html)
 
                 with urlopen(
                     f"{base_url}/api/search?q={quote('中国人民大学')}&ranking=bm25f"
@@ -101,6 +104,28 @@ class WebTest(unittest.TestCase):
                     search_reranked.call_args.kwargs["batch_size"],
                     16,
                 )
+
+                rag_results = [{
+                    "title": "RAG 来源",
+                    "url": "https://info.ruc.edu.cn/example",
+                    "snippet": "RAG 相关片段",
+                }]
+                with patch(
+                    "zeta_engine.web.rag_answer",
+                    return_value={
+                        "answer": "这是模型回答。[文档1]",
+                        "results": rag_results,
+                    },
+                ) as rag_answer:
+                    with urlopen(
+                        f"{base_url}/api/search?q=test&ranking=rag"
+                    ) as response:
+                        rag_payload = json.load(response)
+                self.assertEqual(rag_payload["answer"], "这是模型回答。[文档1]")
+                self.assertEqual(rag_payload["results"], rag_results)
+                self.assertEqual(rag_payload["count"], 1)
+                self.assertEqual(rag_answer.call_args.args[0], "test")
+                self.assertEqual(rag_answer.call_args.kwargs["top_k"], 5)
 
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base_url}/api/search?q=test&limit=nope")

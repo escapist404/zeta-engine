@@ -93,6 +93,22 @@ min-max 归一化后线性融合；
 `--rerank-candidates`、`--reranker-batch-size` 和 `--reranker-model` 调整。
 `--phrase` 要求词和位置连续匹配。
 
+### RAG 问答
+
+设置 OpenAI 兼容服务的 API Key 后，使用检索结果生成回答：
+
+```bash
+export ZETA_LLM_API_KEY="你的 API Key"
+uv run zeta-engine rag "经济困难学生如何申请资助？" --device mps
+```
+
+RAG 默认使用 Dense 检索前 5 条结果，并在回答后保留普通搜索结果。可调整
+Top-K 和底层排名方式：
+
+```bash
+uv run zeta-engine rag "问题" --top-k 8 --ranking hybrid --alpha 0.5
+```
+
 ### Web 前端
 
 先构造索引，再启动同时托管前端和搜索 API 的服务：
@@ -107,6 +123,8 @@ uv run zeta-engine serve
 Hybrid 接口示例为
 `GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
 CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
+RAG 可在页面下拉菜单中选择，也可使用
+`GET /api/search?q=问题&ranking=rag`；默认返回模型回答和 5 条 Dense 来源。
 
 ### 统计
 
