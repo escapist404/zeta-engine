@@ -373,17 +373,3 @@ def crawl_urls(
         queue.count_by_state(),
     )
     return stats
-
-
-def crawl_url(
-    storage: Storage,
-    seed_url: str,
-    allowed_domains: list[str] | tuple[str, ...] | None = None,
-    **options,
-) -> dict[str, int]:
-    return crawl_urls(
-        storage,
-        [seed_url],
-        allowed_domains=allowed_domains,
-        **options,
-    )

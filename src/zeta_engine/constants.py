@@ -45,8 +45,8 @@ TITLE_SELECTORS = (
     "article h1, article [itemprop='headline']",
     "main h1, main [itemprop='headline']",
     "[role='main'] h1, [role='main'] [itemprop='headline']",
-    ".article-title, .article_title, .articleTitle, "
-    ".news-title, .news_title, .newsTitle",
+    (".article-title, .article_title, .articleTitle, "
+    ".news-title, .news_title, .newsTitle"),
     ("body > div > div:nth-child(2) > div > div.right > "
      "div:nth-child(2) > div:nth-child(1) > div:nth-child(1)"),
     ("body > article > div.subPage_con > section "
