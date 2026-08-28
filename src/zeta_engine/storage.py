@@ -27,7 +27,7 @@ class Storage:
         self.queue: _Queue | None = None
         self.index: _Index | None = None
 
-    def __enter__(self) -> "Storage":
+    def __enter__(self) -> "Storage":  # noqa: PYI034
         """打开已配置的数据库并初始化相应的数据表。"""
 
         if self._stack is not None:
@@ -574,7 +574,40 @@ class _Index:
         )
 
     def get_total_len(self) -> tuple[int, int]:
-        return self._connection.execute("SELECT SUM(title_len), SUM(text_len) FROM indexed_documents").fetchone()
+        """返回所有已索引文档的标题和正文 token 总数。"""
+
+        return self._connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(title_len), 0),
+                COALESCE(SUM(text_len), 0)
+            FROM indexed_documents
+            """
+        ).fetchone()
+
+    def get_document_lengths(
+        self,
+        document_ids: set[int],
+    ) -> dict[int, tuple[int, int]]:
+        """返回指定文档的标题和正文 token 数。"""
+
+        if not document_ids:
+            return {}
+
+        placeholders = ", ".join("?" for _ in document_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT document_id, title_len, text_len
+            FROM indexed_documents
+            WHERE document_id IN ({placeholders})
+            """,
+            tuple(document_ids),
+        ).fetchall()
+
+        return {
+            document_id: (title_len, text_len)
+            for document_id, title_len, text_len in rows
+        }
 
     def count_documents(self) -> int:
         """返回当前文档数量。"""

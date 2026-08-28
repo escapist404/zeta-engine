@@ -58,6 +58,17 @@ uv run zeta-engine search "中国人民大学" --ranking bm25f
 
 普通查询会分词并要求所有词都命中；`--ranking` 可选 `simple`、`tf-idf` 或 `bm25f`，默认为 `simple`。`--phrase` 要求词和位置连续匹配。
 
+### Web 前端
+
+先构造索引，再启动同时托管前端和搜索 API 的服务：
+
+```bash
+uv run zeta-engine index --mode search
+uv run zeta-engine serve
+```
+
+打开 <http://127.0.0.1:8000>。搜索接口为 `GET /api/search?q=关键词&limit=10`。
+
 ### 统计
 
 ```bash

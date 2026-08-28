@@ -111,7 +111,7 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         url,
         title,
         content.get_text(" ", strip=True),
-        datetime.now(timezone.UTC).isoformat(),
+        datetime.now(timezone.utc).isoformat(),  # noqa: UP017
     )
     return document, links
 
@@ -225,7 +225,7 @@ def crawl_urls(
                             ),
                         )
                     )
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001
                     logger.warning("下载页面失败: %s (%s)", url, error)
                     if url is not None:
                         processing_queue.put((url, None))
@@ -305,7 +305,7 @@ def crawl_urls(
                     document_id,
                     final_url,
                 )
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 retry_or_fail(url, str(error))
                 logger.warning(
                     "处理页面失败: url=%s (%s)",

@@ -206,4 +206,80 @@ def search_bm25f(
         return []
 
     terms = list(dict.fromkeys(query_terms))
-    
+
+    index = storage.index
+    document_count = index.count_documents()
+    if document_count == 0:
+        return []
+
+    postings = {
+        term: (
+            index.lookup_posting(term, index.TITLE),
+            index.lookup_posting(term, index.TEXT),
+        )
+        for term in terms
+    }
+    matches = {
+        document_id
+        for field_postings in postings.values()
+        for posting in field_postings
+        for document_id in posting
+    }
+    if not matches:
+        return []
+
+    total_title_len, total_text_len = index.get_total_len()
+    average_lengths = {
+        index.TITLE: total_title_len / document_count,
+        index.TEXT: total_text_len / document_count,
+    }
+    document_lengths = index.get_document_lengths(matches)
+
+    k1 = 1.2
+    field_parameters = {
+        index.TITLE: (2.0, 0.3),
+        index.TEXT: (1.0, 0.75),
+    }
+
+    def combined_tf(document_id: int, term: str) -> float:
+        total = 0.
+
+        for field, posting in zip(
+            (index.TITLE, index.TEXT),
+            postings[term],
+        ):
+            tf = len(posting.get(document_id, ()))
+            if not tf:
+                continue
+
+            weight, b = field_parameters[field]
+            average_length = average_lengths[field]
+            length_normalization = (
+                1. - b
+                + b * document_lengths[document_id][field] / average_length
+                if average_length > 0.
+                else 1.
+            )
+            total += weight * tf / length_normalization
+
+        return total
+
+    scores = dict.fromkeys(matches, 0.)
+
+    for term, (title_posting, text_posting) in postings.items():
+        term_matches = set(title_posting) | set(text_posting)
+        document_frequency = len(term_matches)
+        idf = log(
+            1.
+            + (document_count - document_frequency + .5)
+            / (document_frequency + .5)
+        )
+
+        for document_id in term_matches:
+            tf = combined_tf(document_id, term)
+            scores[document_id] += idf * (k1 + 1.) * tf / (k1 + tf)
+
+    return sorted(
+        matches,
+        key=lambda document_id: (-scores[document_id], document_id),
+    )

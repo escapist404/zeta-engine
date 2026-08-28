@@ -6,95 +6,42 @@
   <title>ζ-engine</title>
   <style>
     * { box-sizing: border-box; }
-
-    body {
-      min-height: 100vh;
-      margin: 0;
-      display: grid;
-      place-items: center;
-      color: #171717;
-      background: #f7f7f4;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-
-    main {
-      width: min(620px, calc(100% - 40px));
-      transform: translateY(-9vh);
-    }
-
-    h1 {
-      margin: 0 0 30px;
-      font-size: clamp(2.8rem, 8vw, 5.2rem);
-      font-weight: 500;
-      letter-spacing: -0.075em;
-      text-align: center;
-    }
-
-    form {
-      display: flex;
-      align-items: center;
-      height: 58px;
-      padding: 0 8px 0 22px;
-      border: 1px solid #deded8;
-      border-radius: 999px;
-      background: #fff;
-      box-shadow: 0 12px 30px rgb(0 0 0 / 5%);
-      transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
-    }
-
-    form:focus-within {
-      border-color: #a9a9a1;
-      box-shadow: 0 16px 40px rgb(0 0 0 / 8%);
-      transform: translateY(-1px);
-    }
-
-    input {
-      min-width: 0;
-      flex: 1;
-      border: 0;
-      outline: 0;
-      color: inherit;
-      background: transparent;
-      font: inherit;
-      font-size: 1.05rem;
-    }
-
-    button {
-      width: 44px;
-      height: 44px;
-      display: grid;
-      place-items: center;
-      border: 0;
-      border-radius: 50%;
-      color: #fff;
-      background: #171717;
-      cursor: pointer;
-      transition: transform 160ms ease, background 160ms ease;
-    }
-
+    :root { color: #171717; background: #f7f7f4; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { min-height: 100vh; margin: 0; }
+    main { width: min(720px, calc(100% - 40px)); margin: 0 auto; padding: 22vh 0 80px; transition: padding 180ms ease; }
+    main.has-results { padding-top: 48px; }
+    h1 { margin: 0 0 30px; font-size: clamp(2.8rem, 8vw, 5.2rem); font-weight: 500; letter-spacing: -0.075em; text-align: center; }
+    .has-results h1 { margin-bottom: 20px; font-size: 2.25rem; text-align: left; }
+    form { display: flex; align-items: center; height: 58px; padding: 0 8px 0 22px; border: 1px solid #deded8; border-radius: 999px; background: #fff; box-shadow: 0 12px 30px rgb(0 0 0 / 5%); transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+    form:focus-within { border-color: #a9a9a1; box-shadow: 0 16px 40px rgb(0 0 0 / 8%); transform: translateY(-1px); }
+    input { min-width: 0; flex: 1; border: 0; outline: 0; color: inherit; background: transparent; font: inherit; font-size: 1.05rem; }
+    button { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border: 0; border-radius: 50%; color: #fff; background: #171717; cursor: pointer; transition: transform 160ms ease, background 160ms ease; }
     button:hover { background: #333; }
     button:active { transform: scale(.94); }
     button:focus-visible { outline: 3px solid #bcbcb5; outline-offset: 3px; }
-
-    svg {
-      width: 19px;
-      height: 19px;
-      fill: none;
-      stroke: currentColor;
-      stroke-linecap: round;
-      stroke-width: 2;
+    button:disabled { cursor: wait; opacity: .55; }
+    svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+    #status { min-height: 24px; margin: 26px 2px 10px; color: #74746d; font-size: .9rem; }
+    #results { margin: 0; padding: 0; list-style: none; }
+    .result { padding: 18px 2px 20px; border-bottom: 1px solid #e5e5df; }
+    .result a { color: #171717; font-size: 1.15rem; font-weight: 600; line-height: 1.4; text-decoration: none; }
+    .result a:hover { text-decoration: underline; }
+    .url { margin: 5px 0 8px; overflow: hidden; color: #47734d; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+    .snippet { margin: 0; color: #555550; line-height: 1.65; }
+    .error { color: #a13c31 !important; }
+    @media (max-width: 520px) {
+      main { width: min(100% - 28px, 720px); }
+      main.has-results { padding-top: 28px; }
+      .has-results h1 { text-align: center; }
     }
-
-    @media (prefers-reduced-motion: reduce) {
-      form, button { transition: none; }
-    }
+    @media (prefers-reduced-motion: reduce) { main, form, button { transition: none; } }
   </style>
 </head>
 <body>
   <main>
     <h1>ζ-engine</h1>
-    <form action="https://www.google.com/search" method="get">
-      <input name="q" aria-label="搜索" autocomplete="off" autofocus required>
+    <form id="search-form" role="search">
+      <input id="query" name="q" aria-label="搜索" autocomplete="off" autofocus required>
       <button type="submit" aria-label="提交搜索">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="11" cy="11" r="7"></circle>
@@ -102,6 +49,67 @@
         </svg>
       </button>
     </form>
+    <div id="status" role="status" aria-live="polite"></div>
+    <ol id="results"></ol>
   </main>
+  <script>
+    const main = document.querySelector("main");
+    const form = document.querySelector("form");
+    const input = document.querySelector("input");
+    const button = document.querySelector("button");
+    const status = document.querySelector("#status");
+    const list = document.querySelector("#results");
+
+    function showResults(results) {
+      list.replaceChildren(...results.map(result => {
+        const item = document.createElement("li");
+        item.className = "result";
+        const link = document.createElement("a");
+        link.href = result.url;
+        link.textContent = result.title;
+        const url = document.createElement("p");
+        url.className = "url";
+        url.textContent = result.url;
+        const snippet = document.createElement("p");
+        snippet.className = "snippet";
+        snippet.textContent = result.snippet;
+        item.append(link, url, snippet);
+        return item;
+      }));
+    }
+
+    async function search(query, updateHistory = true) {
+      main.classList.add("has-results");
+      status.className = "";
+      status.textContent = "正在搜索…";
+      list.replaceChildren();
+      button.disabled = true;
+      if (updateHistory) history.pushState({}, "", `?q=${encodeURIComponent(query)}`);
+
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "搜索失败");
+        status.textContent = data.count ? `找到 ${data.count} 条结果` : "没有找到相关结果";
+        showResults(data.results);
+      } catch (error) {
+        status.className = "error";
+        status.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      search(input.value.trim());
+    });
+
+    const initialQuery = new URLSearchParams(location.search).get("q");
+    if (initialQuery) {
+      input.value = initialQuery;
+      search(initialQuery, false);
+    }
+  </script>
 </body>
 </html>

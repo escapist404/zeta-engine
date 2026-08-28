@@ -45,9 +45,3 @@ TIMEOUT = 30
 # Union of the four lists from https://github.com/goto456/stopwords
 STOPWORDS_PATH = Path(__file__).with_name("stopwords.txt")
 STOPWORDS_VERSION = "goto456-bf8b03b9-union"
-
-K1 = 1.2
-TITLE_WEIGHT = 2.0
-TITLE_B = 0.3
-TEXT_WEIGHT = 1.0
-TEXT_B = 0.75

@@ -8,6 +8,7 @@ from zeta_engine.crawler import crawl_urls
 from zeta_engine.index import build_index
 from zeta_engine.search import search_bm25f, search_query, search_tf_idf
 from zeta_engine.storage import Storage
+from zeta_engine.web import serve
 
 
 def configure_logging(log_file: Path) -> None:
@@ -117,11 +118,9 @@ def run_search(args: argparse.Namespace) -> int:
         elif args.ranking == "tf-idf":
             document_ids = search_tf_idf(storage, args.query)
         elif args.ranking == "bm25f":
-            # not implemented yet
-            # document_ids = search_bm25f(storage, args.query)
-            ...
+            document_ids = search_bm25f(storage, args.query)
         else:
-            document_ids = search_query(storage, args.query)
+            document_ids = search_bm25f(storage, args.query)
         for rank, document_id in enumerate(document_ids[:args.limit], start=1):
             document = storage.documents.get(document_id)
             if document is None:
@@ -130,6 +129,22 @@ def run_search(args: argparse.Namespace) -> int:
             snippet = " ".join(text.split())[:160]
             print(f"{rank}. {title}\n   {url}\n   {snippet}\n")
 
+    return 0
+
+
+def run_server(args: argparse.Namespace) -> int:
+    try:
+        serve(
+            args.host,
+            args.port,
+            args.document_db,
+            args.index_db,
+            args.frontend,
+        )
+    except FileNotFoundError as error:
+        raise SystemExit(f"文件不存在: {error.args[0]}") from error
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -218,6 +233,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--limit", type=int, default=10)
     search.set_defaults(handler=run_search)
+
+    server = commands.add_parser("serve", help="启动 Web 搜索服务")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8000)
+    server.add_argument(
+        "--document-db",
+        type=Path,
+        default=Path("data/zeta.db"),
+    )
+    server.add_argument(
+        "--index-db",
+        type=Path,
+        default=Path("data/index.db"),
+    )
+    server.add_argument(
+        "--frontend",
+        type=Path,
+        default=Path("index.html"),
+    )
+    server.set_defaults(handler=run_server)
 
     return parser
 

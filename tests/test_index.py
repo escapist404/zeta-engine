@@ -3,10 +3,10 @@ from unittest.mock import patch
 
 from zeta_engine.index import build_index
 from zeta_engine.search import (
+    search_bm25f,
     search_phrase,
     search_query,
     search_term,
-    search_tf_idf,
 )
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import load_stopwords, tokenize_with_positions
@@ -87,18 +87,18 @@ class IndexTest(unittest.TestCase):
             )
             self.assertEqual(storage.index.count_terms(), 1)
 
-    def test_tf_idf_ranks_by_weight_without_cosine_normalization(self) -> None:
+    def test_bm25f_boosts_title_and_penalizes_long_fields(self) -> None:
         with Storage(document_db=":memory:", index_db=":memory:") as storage:
             assert storage.documents is not None
-            for url, title in (
-                ("https://example.test/low", "common x"),
-                ("https://example.test/high", "common x x x"),
-                ("https://example.test/other", "common y"),
+            for url, title, text in (
+                ("https://example.test/title", "x", "pad"),
+                ("https://example.test/short", "pad", "x"),
+                ("https://example.test/long", "pad", "x pad pad pad"),
             ):
                 storage.documents.save(
                     url=url,
                     title=title,
-                    text="",
+                    text=text,
                     fetched_at="2026-08-26T10:00:00",
                 )
 
@@ -111,8 +111,7 @@ class IndexTest(unittest.TestCase):
                 patch("zeta_engine.search.tokenize_with_positions", side_effect=tokenize),
             ):
                 build_index(storage)
-                self.assertEqual(search_tf_idf(storage, "x"), [2, 1])
-                self.assertEqual(search_tf_idf(storage, "common"), [1, 2, 3])
+                self.assertEqual(search_bm25f(storage, "x"), [1, 2, 3])
 
     def test_logs_progress_every_100_documents(self) -> None:
         with Storage(document_db=":memory:", index_db=":memory:") as storage:

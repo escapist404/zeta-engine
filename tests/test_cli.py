@@ -74,6 +74,19 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(tf_idf_args.handler(tf_idf_args), 0)
             search_tf_idf.assert_called_once_with(ANY, "中国人民大学")
 
+            bm25f_args = parser.parse_args([
+                "search", "中国人民大学",
+                "--document-db", str(document_db),
+                "--index-db", str(index_db),
+                "--ranking", "bm25f",
+            ])
+            with patch(
+                "zeta_engine.cli.search_bm25f",
+                return_value=[],
+            ) as search_bm25f:
+                self.assertEqual(bm25f_args.handler(bm25f_args), 0)
+            search_bm25f.assert_called_once_with(ANY, "中国人民大学")
+
 
 if __name__ == "__main__":
     unittest.main()
