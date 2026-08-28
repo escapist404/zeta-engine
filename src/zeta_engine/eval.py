@@ -21,7 +21,7 @@ from zeta_engine.search import (
 )
 from zeta_engine.storage import Storage
 
-DEFAULT_BASE_URL = "http://154.17.1.206:8080/"
+DEFAULT_BASE_URL = "http://10.47.253.18:8080/"
 
 
 def input_idx() -> str:
