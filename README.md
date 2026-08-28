@@ -38,6 +38,12 @@ uv run zeta-engine crawl \
 uv run zeta-engine crawl --help
 ```
 
+默认使用原有的 BeautifulSoup 抽取器。要改用 Resiliparse：
+
+```bash
+uv run zeta-engine crawl --extractor resiliparse
+```
+
 ### 构造索引
 
 ```bash
@@ -47,6 +53,25 @@ uv run zeta-engine index --mode search --log-file logs/zeta-engine.log
 
 索引开始、每处理 100 篇文档以及索引完成时都会输出日志。
 
+构造 BGE Dense 向量索引：
+
+```bash
+uv run hf download BAAI/bge-small-zh-v1.5 \
+  --local-dir models/bge-small-zh-v1.5 \
+  --exclude "pytorch_model.bin"
+uv run zeta-engine dense-index --device mps
+```
+
+MPS 不可用时将 `--device mps` 改为 `--device cpu`。Dense 索引默认
+写入 `data/dense/`。
+
+如需使用 CrossEncoder 重排，另行下载本地 reranker 模型：
+
+```bash
+uv run hf download BAAI/bge-reranker-base \
+  --local-dir models/bge-reranker-base
+```
+
 ### 查询
 
 ```bash
@@ -54,9 +79,18 @@ uv run zeta-engine search "中国人民大学"
 uv run zeta-engine search "中国人民大学" --phrase --limit 20
 uv run zeta-engine search "中国人民大学" --ranking tf-idf
 uv run zeta-engine search "中国人民大学" --ranking bm25f
+uv run zeta-engine search "经济困难学生如何获得帮助" --ranking dense --device mps
+uv run zeta-engine search "经济困难学生如何获得帮助" --ranking hybrid --alpha 0.5 --device mps
+uv run zeta-engine search "经济困难学生如何获得帮助" --ranking rerank --device mps
 ```
 
-普通查询会分词并要求所有词都命中；`--ranking` 可选 `simple`、`tf-idf` 或 `bm25f`，默认为 `simple`。`--phrase` 要求词和位置连续匹配。
+普通查询会分词并要求所有词都命中；`--ranking` 可选 `simple`、`tf-idf`、
+`bm25f`、`dense`、`hybrid` 或 `rerank`，默认为 `hybrid`。Hybrid 将两路分数分别做
+min-max 归一化后线性融合；
+`--alpha 0` 等于 BM25F，`--alpha 1` 等于 Dense，默认为 `0.5`。
+`rerank` 默认使用 CrossEncoder 对 Hybrid 的前 50 个候选重新排序；可用
+`--rerank-candidates`、`--reranker-batch-size` 和 `--reranker-model` 调整。
+`--phrase` 要求词和位置连续匹配。
 
 ### Web 前端
 
@@ -67,12 +101,38 @@ uv run zeta-engine index --mode search
 uv run zeta-engine serve
 ```
 
-打开 <http://127.0.0.1:8000>。搜索接口为 `GET /api/search?q=关键词&limit=10`。
+打开 <http://127.0.0.1:8000>。搜索接口为
+`GET /api/search?q=关键词&limit=20&ranking=dense`；`ranking` 默认为 `hybrid`。
+Hybrid 接口示例为
+`GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
+CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
 
 ### 统计
 
 ```bash
 uv run zeta-engine stats
+```
+
+### 评测
+
+构造索引后运行 MRR@20 评测：
+
+```bash
+uv run zeta-engine eval
+```
+
+如需使用其他评测服务地址：
+
+```bash
+uv run zeta-engine eval --base-url http://localhost:8080
+```
+
+空密码进入 debug 模式，评测服务会返回每道查询的 reciprocal rank：
+
+```bash
+uv run zeta-engine eval --ranking dense --device mps
+uv run zeta-engine eval --ranking hybrid --alpha 0.5 --device mps
+uv run zeta-engine eval --ranking rerank --device mps
 ```
 
 ### 指定数据库
