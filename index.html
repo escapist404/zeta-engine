@@ -3,49 +3,61 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ζ-engine</title>
+  <title>ζengine</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0%200%2064%2064'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23d97757'/%3E%3Ctext x='32' y='47' text-anchor='middle' font-family='serif' font-size='46' font-weight='700' fill='%23f3eee7'%3E%CE%B6%3C/text%3E%3C/svg%3E">
   <style>
     * { box-sizing: border-box; }
-    :root { color: #171717; background: #f7f7f4; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    :root { color: #191918; background: #f3eee7; font-family: Arial, "Noto Sans SC", sans-serif; font-synthesis: none; }
     body { min-height: 100vh; margin: 0; }
     main { width: min(720px, calc(100% - 40px)); margin: 0 auto; padding: 22vh 0 80px; transition: padding 180ms ease; }
     main.has-results { padding-top: 48px; }
-    h1 { margin: 0 0 30px; font-size: clamp(2.8rem, 8vw, 5.2rem); font-weight: 500; letter-spacing: -0.075em; text-align: center; }
-    .has-results h1 { margin-bottom: 20px; font-size: 2.25rem; text-align: left; }
-    form { display: flex; align-items: center; height: 58px; padding: 0 8px 0 22px; border: 1px solid #deded8; border-radius: 999px; background: #fff; box-shadow: 0 12px 30px rgb(0 0 0 / 5%); transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
-    form:focus-within { border-color: #a9a9a1; box-shadow: 0 16px 40px rgb(0 0 0 / 8%); transform: translateY(-1px); }
+    h1 { margin: 0 0 34px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(3.2rem, 9vw, 5.6rem); font-weight: 400; letter-spacing: -.07em; text-align: center; }
+    h1 span { color: #d97757; }
+    .has-results h1 { margin-bottom: 22px; font-size: 2.5rem; text-align: left; }
+    form { display: flex; align-items: center; min-height: 72px; padding: 7px 8px 7px 22px; border: 1px solid #958e85; border-radius: 5px; background: #faf7f2; box-shadow: 8px 8px 0 #dfd7cc; transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+    form:focus-within { border-color: #191918; box-shadow: 11px 11px 0 #dfd7cc; transform: translate(-2px, -2px); }
     input { min-width: 0; flex: 1; border: 0; outline: 0; color: inherit; background: transparent; font: inherit; font-size: 1.05rem; }
-    button { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border: 0; border-radius: 50%; color: #fff; background: #171717; cursor: pointer; transition: transform 160ms ease, background 160ms ease; }
-    button:hover { background: #333; }
+    select { margin: 0 10px; padding: 7px 8px; border: 1px solid #c9c1b7; border-radius: 3px; color: #625e57; background: #f3eee7; font: inherit; font-size: .75rem; }
+    button { width: 56px; height: 56px; display: grid; place-items: center; flex: 0 0 auto; border: 0; border-radius: 3px; color: #f3eee7; background: #191918; cursor: pointer; transition: transform 160ms ease, background 160ms ease; }
+    button:hover { background: #d97757; }
     button:active { transform: scale(.94); }
-    button:focus-visible { outline: 3px solid #bcbcb5; outline-offset: 3px; }
+    button:focus-visible { outline: 3px solid #d97757; outline-offset: 3px; }
     button:disabled { cursor: wait; opacity: .55; }
     svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
-    #status { min-height: 24px; margin: 26px 2px 10px; color: #74746d; font-size: .9rem; }
+    #status { min-height: 24px; margin: 34px 2px 10px; color: #625e57; font-size: .73rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
     #results { margin: 0; padding: 0; list-style: none; }
-    .result { padding: 18px 2px 20px; border-bottom: 1px solid #e5e5df; }
-    .result a { color: #171717; font-size: 1.15rem; font-weight: 600; line-height: 1.4; text-decoration: none; }
-    .result a:hover { text-decoration: underline; }
-    .url { margin: 5px 0 8px; overflow: hidden; color: #47734d; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
-    .snippet { margin: 0; color: #555550; line-height: 1.65; }
-    .error { color: #a13c31 !important; }
+    .result { padding: 24px 2px 26px; border-top: 1px solid #c9c1b7; }
+    .result a { color: #191918; font-family: Georgia, "Times New Roman", "Noto Serif SC", serif; font-size: 1.35rem; font-weight: 400; line-height: 1.35; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+    .result a:hover { color: #d45f3b; }
+    .url { margin: 8px 0 11px; overflow: hidden; color: #8b4a35; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+    .snippet { margin: 0; color: #625e57; font-family: Georgia, "Times New Roman", "Noto Serif SC", serif; line-height: 1.65; }
+    .error { color: #b64a35 !important; }
     @media (max-width: 520px) {
       main { width: min(100% - 28px, 720px); }
       main.has-results { padding-top: 28px; }
       .has-results h1 { text-align: center; }
+      form { min-height: 66px; padding: 7px 7px 7px 17px; box-shadow: 6px 6px 0 #dfd7cc; }
+      form:focus-within { box-shadow: 8px 8px 0 #dfd7cc; }
+      button { width: 50px; height: 50px; }
     }
     @media (prefers-reduced-motion: reduce) { main, form, button { transition: none; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>ζ-engine</h1>
+    <h1><span>ζ</span>engine</h1>
     <form id="search-form" role="search">
       <input id="query" name="q" aria-label="搜索" autocomplete="off" autofocus required>
+      <select id="ranking" aria-label="检索方式">
+        <option value="bm25f">BM25F</option>
+        <option value="dense">Dense</option>
+        <option value="hybrid" selected>Hybrid</option>
+        <option value="rerank">Reranker</option>
+      </select>
       <button type="submit" aria-label="提交搜索">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="11" cy="11" r="7"></circle>
-          <path d="m16.5 16.5 4 4"></path>
+          <path d="M5 12h14"></path>
+          <path d="m14 7 5 5-5 5"></path>
         </svg>
       </button>
     </form>
@@ -56,6 +68,7 @@
     const main = document.querySelector("main");
     const form = document.querySelector("form");
     const input = document.querySelector("input");
+    const ranking = document.querySelector("#ranking");
     const button = document.querySelector("button");
     const status = document.querySelector("#status");
     const list = document.querySelector("#results");
@@ -79,15 +92,18 @@
     }
 
     async function search(query, updateHistory = true) {
+      const rankingMode = ranking.value;
       main.classList.add("has-results");
       status.className = "";
       status.textContent = "正在搜索…";
       list.replaceChildren();
       button.disabled = true;
-      if (updateHistory) history.pushState({}, "", `?q=${encodeURIComponent(query)}`);
+      if (updateHistory) {
+        history.pushState({}, "", `?q=${encodeURIComponent(query)}&ranking=${rankingMode}`);
+      }
 
       try {
-        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&ranking=${rankingMode}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "搜索失败");
         status.textContent = data.count ? `找到 ${data.count} 条结果` : "没有找到相关结果";
@@ -105,7 +121,10 @@
       search(input.value.trim());
     });
 
-    const initialQuery = new URLSearchParams(location.search).get("q");
+    const initialParameters = new URLSearchParams(location.search);
+    const initialQuery = initialParameters.get("q");
+    const initialRanking = initialParameters.get("ranking");
+    if (["bm25f", "dense", "hybrid", "rerank"].includes(initialRanking)) ranking.value = initialRanking;
     if (initialQuery) {
       input.value = initialQuery;
       search(initialQuery, false);

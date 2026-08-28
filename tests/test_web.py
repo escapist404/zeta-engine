@@ -3,10 +3,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
+from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
 from zeta_engine.storage import Storage
 from zeta_engine.web import create_server
@@ -38,9 +40,13 @@ class WebTest(unittest.TestCase):
 
             try:
                 with urlopen(base_url) as response:
-                    self.assertIn("ζ-engine", response.read().decode())
+                    frontend_html = response.read().decode()
+                self.assertIn("<span>ζ</span>engine", frontend_html)
+                self.assertIn('value="hybrid" selected', frontend_html)
 
-                with urlopen(f"{base_url}/api/search?q={quote('中国人民大学')}") as response:
+                with urlopen(
+                    f"{base_url}/api/search?q={quote('中国人民大学')}&ranking=bm25f"
+                ) as response:
                     payload = json.load(response)
                 self.assertEqual(payload["count"], 1)
                 self.assertEqual(
@@ -48,8 +54,59 @@ class WebTest(unittest.TestCase):
                     "https://info.ruc.edu.cn/example",
                 )
 
+                with patch(
+                    "zeta_engine.web.search_dense",
+                    return_value=[DenseHit(1, 0.9, "Dense 命中分块")],
+                ):
+                    with urlopen(
+                        f"{base_url}/api/search?q=test&ranking=dense"
+                    ) as response:
+                        dense_payload = json.load(response)
+                self.assertEqual(
+                    dense_payload["results"][0]["snippet"],
+                    "Dense 命中分块",
+                )
+
+                with patch(
+                    "zeta_engine.web.search_hybrid",
+                    return_value=[1],
+                ) as search_hybrid:
+                    with urlopen(
+                        f"{base_url}/api/search?q=test&alpha=0.7"
+                    ) as response:
+                        hybrid_payload = json.load(response)
+                self.assertEqual(hybrid_payload["count"], 1)
+                self.assertEqual(search_hybrid.call_args.kwargs["alpha"], .7)
+                self.assertEqual(search_hybrid.call_args.kwargs["limit"], 20)
+
+                with patch(
+                    "zeta_engine.web.search_reranked",
+                    return_value=[1],
+                ) as search_reranked:
+                    with urlopen(
+                        f"{base_url}/api/search?q=test&ranking=rerank"
+                    ) as response:
+                        reranked_payload = json.load(response)
+                self.assertEqual(reranked_payload["count"], 1)
+                self.assertEqual(
+                    search_reranked.call_args.kwargs["candidate_limit"],
+                    50,
+                )
+                self.assertEqual(
+                    search_reranked.call_args.kwargs["batch_size"],
+                    16,
+                )
+
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base_url}/api/search?q=test&limit=nope")
+                self.assertEqual(error.exception.code, 400)
+
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(f"{base_url}/api/search?q=test&ranking=unknown")
+                self.assertEqual(error.exception.code, 400)
+
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(f"{base_url}/api/search?q=test&ranking=hybrid&alpha=2")
                 self.assertEqual(error.exception.code, 400)
             finally:
                 server.shutdown()
