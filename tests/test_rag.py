@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from zeta_engine.rag import (
+    Evidence,
     LLM_API_KEY_ENV,
     LLM_BASE_URL,
     LLM_MAX_OUTPUT_TOKENS,
@@ -31,24 +32,30 @@ def verification(
     issues: list[dict[str, str]] | None = None,
     queries: list[str] | None = None,
     calculation_ids: list[int | str] | None = None,
+    evidence_ids: list[str] | None = None,
 ) -> str:
+    references = (
+        {"evidence_ids": evidence_ids}
+        if evidence_ids is not None
+        else {"source_ids": [1]}
+    )
     return json.dumps({
         "valid": valid,
         "requirements": [{
             "description": "回答问题",
             "satisfied": satisfied,
-            "source_ids": [1],
+            **references,
         }],
         "claims": [{
             "statement": "候选答案",
             "status": status,
-            "source_ids": [1],
+            **references,
             "calculation_ids": calculation_ids or [],
         }],
         "conflicts": ([] if resolved else [{
             "description": "候选值冲突",
             "resolved": False,
-            "source_ids": [1],
+            **references,
         }]),
         "issues": issues or [],
         "queries": queries or [],
@@ -141,7 +148,7 @@ class RagTest(unittest.TestCase):
         self.assertIn("[文档3]", context)
         self.assertIn("内容：第二条证据", context)
         self.assertNotIn("重复正文", context)
-        self.assertEqual(merge_results(results, max_chars=10), context[:10])
+        self.assertEqual(merge_results(results, max_chars=10), "")
 
     def test_builds_grounded_prompt(self) -> None:
         prompt = build_prompt("申请条件是什么？", "[文档1]\n内容：申请条件")
@@ -162,7 +169,7 @@ class RagTest(unittest.TestCase):
             "[文档1]\n内容：申请条件",
             include_citations=True,
         )
-        self.assertIn("使用 [文档1]、[文档2] 等标签标注依据", cited_prompt)
+        self.assertIn("使用证据ID标注依据", cited_prompt)
 
         agent_prompt = build_agent_prompt(
             "三年夏令营人数分别是多少？",
@@ -340,7 +347,7 @@ class RagTest(unittest.TestCase):
             response = agentic_rag_answer("问题", search_fn, max_cycles=4)
 
         self.assertEqual(response["answer"], "完成")
-        self.assertEqual(len(response["results"]), 20)
+        self.assertEqual(len(response["results"]), 21)
         self.assertIn("后续轮次的关键证据", model.call_args_list[2].args[0])
 
     def test_agentic_rag_prioritizes_new_evidence_before_truncation(self) -> None:
@@ -483,6 +490,84 @@ class RagTest(unittest.TestCase):
         self.assertIn("结果：3", model.call_args_list[1].args[0])
         self.assertEqual(response["trace"][0]["action"], "calculate")
 
+    def test_calculation_keeps_stable_evidence_after_later_search(self) -> None:
+        first = {
+            "url": "https://example.test/list",
+            "content": "甲 乙",
+        }
+        first_id = Evidence.from_result(first).evidence_id
+
+        def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
+            if query == "补充":
+                return [{
+                    "url": "https://example.test/new",
+                    "content": "无关的新证据",
+                }]
+            return [first]
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                json.dumps({
+                    "action": "calculate",
+                    "calculations": [{
+                        "name": "人数",
+                        "operator": "count",
+                        "items": [
+                            {"value": "甲", "evidence_id": first_id},
+                            {"value": "乙", "evidence_id": first_id},
+                        ],
+                    }],
+                }, ensure_ascii=False),
+                '{"action":"search","queries":["补充"]}',
+                '{"action":"answer","answer":"2人"}',
+                verification(calculation_ids=["人数"], evidence_ids=[first_id]),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "有多少人？",
+                search_fn,
+                max_cycles=4,
+                debug=True,
+            )
+
+        calculation = response["trace"][0]["calculations"][0]
+        self.assertEqual(calculation["evidence_ids"], [first_id])
+        self.assertEqual(response["sources"][0]["evidence_id"], first_id)
+        self.assertEqual(len(response["results"]), 2)
+
+    def test_returns_claim_level_stable_sources(self) -> None:
+        result = {
+            "title": "证据",
+            "url": "https://example.test/evidence",
+            "content": "答案是四。",
+        }
+        evidence_id = Evidence.from_result(result).evidence_id
+        answer = json.dumps({
+            "action": "answer",
+            "answer": "四",
+            "claims": [{
+                "statement": "答案是四",
+                "evidence_ids": [evidence_id],
+                "calculation_ids": [],
+            }],
+        }, ensure_ascii=False)
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                answer,
+                verification(evidence_ids=[evidence_id]),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "答案是多少？",
+                lambda _query, _top_k: [result],
+            )
+
+        self.assertEqual(response["claims"][0]["evidence_ids"], [evidence_id])
+        self.assertEqual(response["sources"][0]["evidence_id"], evidence_id)
+
     def test_agentic_rag_revises_rejected_final_answer_once(self) -> None:
         rejected = verification(
             valid=False,
@@ -571,8 +656,208 @@ class RagTest(unittest.TestCase):
 
         self.assertEqual(response["answer"], "新值")
         revision = response["trace"][0]["temporal_revision"]
-        self.assertEqual(revision["excluded_source_ids"], [1])
+        self.assertEqual(revision["policy"], "latest_per_independent_fact")
         self.assertTrue(revision["valid"])
+
+    def test_prefilters_older_dated_records_for_each_query_entity(self) -> None:
+        results = [
+            {
+                "title": "星河公司旧记录",
+                "url": "https://example.test/star-old",
+                "published_at": "2024-01-01",
+                "content": "星河公司是第2项",
+            },
+            {
+                "title": "星河公司新记录",
+                "url": "https://example.test/star-new",
+                "published_at": "2025-01-01",
+                "content": "星河公司是第4项",
+            },
+            {
+                "title": "远山公司记录",
+                "url": "https://example.test/mountain",
+                "published_at": "2023-01-01",
+                "content": "远山公司是第1项",
+            },
+        ]
+        old_id = Evidence.from_result(results[0]).evidence_id
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"远山公司、星河公司"}',
+                verification(),
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                "请按编号排列星河公司和远山公司",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        initial_prompt = model.call_args_list[0].args[0]
+        self.assertNotIn("星河公司是第2项", initial_prompt)
+        self.assertIn("星河公司是第4项", initial_prompt)
+        self.assertEqual(response["trace"][0]["superseded_evidence_ids"], [old_id])
+        self.assertEqual(len(response["results"]), 3)
+
+    def test_sorts_title_facts_without_an_llm_call(self) -> None:
+        results = [
+            {
+                "title": "远山公司企业参访第12站",
+                "url": "https://example.test/mountain",
+                "published_at": "2025-01-01",
+                "content": "远山公司参访纪实",
+            },
+            {
+                "title": "星河公司企业参访第3站",
+                "url": "https://example.test/star",
+                "published_at": "2025-01-02",
+                "content": "星河公司参访纪实",
+            },
+        ]
+
+        with patch("zeta_engine.rag.call_model") as model:
+            response = agentic_rag_answer(
+                "星河公司和远山公司的站次顺序是什么？",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        self.assertEqual(
+            response["answer"],
+            "星河公司是第3站、远山公司是第12站。",
+        )
+        self.assertEqual(response["trace"][0]["action"], "deterministic_sort")
+        self.assertEqual(len(response["claims"]), 2)
+        model.assert_not_called()
+
+    def test_single_explicit_year_scopes_initial_evidence(self) -> None:
+        results = [
+            {
+                "title": "林老师入选2024年度人才计划",
+                "url": "https://example.test/2024",
+                "published_at": "2024-09-01",
+                "content": "2024年度入选教师是林老师",
+            },
+            {
+                "title": "王老师入选2025年度人才计划",
+                "url": "https://example.test/2025",
+                "published_at": "2025-09-01",
+                "content": "2025年度入选教师是王老师",
+            },
+        ]
+        excluded_id = Evidence.from_result(results[1]).evidence_id
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"林老师"}',
+                verification(),
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                "2024年度人才计划入选教师是谁？",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        initial_prompt = model.call_args_list[0].args[0]
+        self.assertIn("2024年度入选教师是林老师", initial_prompt)
+        self.assertNotIn("2025年度入选教师是王老师", initial_prompt)
+        self.assertEqual(
+            response["trace"][0]["scope_excluded_evidence_ids"],
+            [excluded_id],
+        )
+
+    def test_temporal_sorting_stops_after_grounded_format_revision(self) -> None:
+        results = [
+            {
+                "url": "https://example.test/old",
+                "published_at": "2024-01-01",
+                "content": "乙对象曾经排第2",
+            },
+            {
+                "url": "https://example.test/new",
+                "published_at": "2025-01-01",
+                "content": "甲对象当前排第1，乙对象当前排第3",
+            },
+        ]
+        conflict = json.dumps({
+            "valid": False,
+            "requirements": [{
+                "description": "按当前编号排序对象",
+                "satisfied": True,
+                "source_ids": [1, 2],
+            }],
+            "claims": [{
+                "statement": "乙对象排第2",
+                "status": "supported",
+                "source_ids": [1],
+                "calculation_ids": [],
+            }],
+            "conflicts": [{
+                "description": "乙对象有新旧编号",
+                "resolved": False,
+                "resolution": "",
+                "source_ids": [1, 2],
+            }],
+            "issues": [{
+                "type": "conflict",
+                "description": "需要采用最新记录",
+            }],
+            "queries": [],
+        }, ensure_ascii=False)
+        grounded_but_invalid = json.dumps({
+            "valid": False,
+            "requirements": [{
+                "description": "按当前编号排序对象",
+                "satisfied": True,
+                "source_ids": [1],
+            }],
+            "claims": [
+                {
+                    "statement": "甲对象排第1",
+                    "status": "supported",
+                    "source_ids": [1],
+                    "calculation_ids": [],
+                },
+                {
+                    "statement": "乙对象排第3",
+                    "status": "supported",
+                    "source_ids": [1],
+                    "calculation_ids": [],
+                },
+            ],
+            "conflicts": [],
+            "issues": [{
+                "type": "format",
+                "description": "候选答案只列出了编号",
+            }],
+            "queries": [],
+        }, ensure_ascii=False)
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"乙对象第2"}',
+                conflict,
+                "第1、第3",
+                grounded_but_invalid,
+                grounded_but_invalid,
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                "请按当前编号顺序排列对象",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        self.assertEqual(response["answer"], "甲对象排第1、乙对象排第3。")
+        self.assertEqual(response["model_call_count"], 5)
+        self.assertEqual(model.call_count, 5)
+        revision = response["trace"][0]["temporal_revision"]
+        self.assertTrue(revision["format_revision"]["accepted_as_grounded"])
 
 
 if __name__ == "__main__":
