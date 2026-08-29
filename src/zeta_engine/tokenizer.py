@@ -15,12 +15,6 @@ def text_normalize(text: str) -> str:
     return " ".join(text.split())
 
 
-def load_stopwords() -> frozenset[str]:
-    """返回内置停用词集合。"""
-
-    return STOPWORDS
-
-
 def tokenize_with_positions(
     text: str,
     mode: str = "default",
@@ -29,17 +23,12 @@ def tokenize_with_positions(
 
     if mode not in {"default", "search"}:
         raise ValueError(f"不支持的分词模式: {mode}")
-    stopwords = load_stopwords()
     return [
         (token, start)
         for token, start, _ in jieba.tokenize(text, mode=mode)
         if (
             token.strip()
             and any(character.isalnum() for character in token)
-            and token.casefold() not in stopwords
+            and token.casefold() not in STOPWORDS
         )
     ]
-
-
-def load_user_dictionary() -> None:
-    ...

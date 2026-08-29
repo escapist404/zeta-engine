@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Data
-data
+data/
 logs/
 
 # Local embedding models
@@ -18,3 +18,4 @@ models/
 
 # Misc
 .DS_Store
+.env

@@ -14,7 +14,6 @@ from zeta_engine.search import (
 )
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
-    load_stopwords,
     text_normalize,
     tokenize_with_positions,
 )
@@ -252,8 +251,6 @@ class IndexTest(unittest.TestCase):
         ],
     )
     def test_tokenizer_filters_stopwords_and_keeps_positions(self, _tokenize) -> None:
-        self.assertIn("的", load_stopwords())
-        self.assertNotIn("10", load_stopwords())
         self.assertEqual(
             tokenize_with_positions("人民大学 的招生。"),
             [("人民大学", 0), ("招生", 6)],

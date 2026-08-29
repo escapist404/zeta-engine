@@ -35,10 +35,6 @@ class DenseHit:
     snippet: str
 
 
-def _normalize_text(text: str) -> str:
-    return text_normalize(text)
-
-
 def _chunk_document(
     tokenizer: Any,
     title: str,
@@ -50,8 +46,8 @@ def _chunk_document(
 ) -> list[tuple[str, str]]:
     """Return (embedding text, snippet) pairs within the token budget."""
 
-    title = _normalize_text(title)
-    text = _normalize_text(text)
+    title = text_normalize(title)
+    text = text_normalize(text)
     if not title and not text:
         return []
 
@@ -374,7 +370,7 @@ def search_dense(
 ) -> list[DenseHit]:
     """Return distinct documents ranked by their best matching chunk."""
 
-    query = _normalize_text(query)
+    query = text_normalize(query)
     if not query or limit <= 0:
         return []
 

@@ -274,16 +274,16 @@ def run_evaluator(args: argparse.Namespace) -> int:
     if args.mode == "rag" and args.top_k <= 0:
         raise SystemExit("--top-k 必须大于 0")
     evaluator = run_rag_evaluation if args.mode == "rag" else run_evaluation
-    kwargs = dict(
-        base_url=args.base_url,
-        ranking=args.ranking,
-        dense_index=args.dense_index,
-        reranker_model=args.reranker_model,
-        rerank_candidates=args.rerank_candidates,
-        reranker_batch_size=args.reranker_batch_size,
-        device=args.device,
-        alpha=args.alpha,
-    )
+    kwargs = {
+        "base_url": args.base_url,
+        "ranking": args.ranking,
+        "dense_index": args.dense_index,
+        "reranker_model": args.reranker_model,
+        "rerank_candidates": args.rerank_candidates,
+        "reranker_batch_size": args.reranker_batch_size,
+        "device": args.device,
+        "alpha": args.alpha,
+    }
     if args.mode == "rag":
         kwargs["top_k"] = args.top_k
     evaluator(
