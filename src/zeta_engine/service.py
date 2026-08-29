@@ -21,6 +21,7 @@ _PUBLISHED_DATE_RE = re.compile(
     r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})日?"
 )
 _URL_DATE_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})")
+RAG_DOCUMENT_WINDOW_CHARS = 28_000
 
 
 def _query_terms(query: str) -> list[str]:
@@ -140,6 +141,7 @@ def search_documents(
             if document is None:
                 continue
             url, title, text, _fetched_at = document
+            content_html = storage.documents.get_content_html(document_id)
             dense_text = text_normalize(snippets.get(document_id, ""))
             dense_snippet = _query_snippet(query, dense_text)
             lexical_snippet = _query_snippet(query, text)
@@ -163,6 +165,8 @@ def search_documents(
                     key=lambda item: _lexical_score(item, terms),
                     default="",
                 )
+                if content_html and len(text_normalize(text)) <= content_limit:
+                    result["structured_content"] = content_html
             results.append(result)
         return results
 
@@ -192,7 +196,7 @@ def answer_question(
             dense_index=dense_index,
             device=device,
             alpha=alpha,
-            content_limit=3000,
+            content_limit=RAG_DOCUMENT_WINDOW_CHARS,
         )
 
     return agentic_rag_answer(

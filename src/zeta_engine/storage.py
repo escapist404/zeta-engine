@@ -2,6 +2,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import ExitStack, closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -106,10 +107,20 @@ class _Document:
                 url TEXT NOT NULL UNIQUE,
                 title TEXT NOT NULL,
                 text TEXT NOT NULL,
-                fetched_at TEXT NOT NULL
+                fetched_at TEXT NOT NULL,
+                content_html TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        columns = {
+            row[1]
+            for row in self._connection.execute("PRAGMA table_info(documents)")
+        }
+        if "content_html" not in columns:
+            self._connection.execute(
+                "ALTER TABLE documents "
+                "ADD COLUMN content_html TEXT NOT NULL DEFAULT ''"
+            )
         self._connection.commit()
 
     def save(
@@ -119,17 +130,19 @@ class _Document:
         title: str,
         text: str,
         fetched_at: str,
+        content_html: str = "",
     ) -> int:
         """新增或更新 URL 对应的文档，并返回稳定的文档 ID。"""
 
         row = self._connection.execute(
             """
-            INSERT INTO documents (url, title, text, fetched_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO documents (url, title, text, fetched_at, content_html)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 title = excluded.title,
                 text = excluded.text,
-                fetched_at = excluded.fetched_at
+                fetched_at = excluded.fetched_at,
+                content_html = excluded.content_html
             RETURNING id
             """,
             (
@@ -137,6 +150,7 @@ class _Document:
                 title,
                 text,
                 fetched_at,
+                content_html,
             ),
         ).fetchone()
 
@@ -155,6 +169,15 @@ class _Document:
             (document_id,)
         ).fetchone()
         return row
+
+    def get_content_html(self, document_id: int) -> str:
+        """返回文档的安全结构化正文；旧数据没有该字段内容时返回空字符串。"""
+
+        row = self._connection.execute(
+            "SELECT content_html FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        return row[0] if row is not None else ""
 
     def iter_all(self) -> Iterator[tuple[int, str, str, str, str]]:
         """按文档 ID 顺序遍历所有原始文档。"""
@@ -181,7 +204,7 @@ class _Document:
 
 
 class _Queue:
-    """管理爬取任务；crawl_tasks 保存 URL 的状态、尝试次数和最近错误。"""
+    """管理爬取任务的状态、尝试次数、最近错误和完成时间。"""
 
     def __init__(self, connection: sqlite3.Connection):
         self._connection = connection
@@ -196,13 +219,22 @@ class _Queue:
                 state TEXT NOT NULL DEFAULT 'pending'
                     CHECK (state IN ('pending', 'processing', 'done', 'failed')),
                 attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
+                last_error TEXT,
+                finished_at TEXT
             );
 
             CREATE INDEX IF NOT EXISTS crawl_tasks_state_idx
             ON crawl_tasks(state);
             """
         )
+        columns = {
+            row[1]
+            for row in self._connection.execute("PRAGMA table_info(crawl_tasks)")
+        }
+        if "finished_at" not in columns:
+            self._connection.execute(
+                "ALTER TABLE crawl_tasks ADD COLUMN finished_at TEXT"
+            )
         self._connection.commit()
 
     def enqueue(self, urls: list[str] | tuple[str, ...], ) -> list[str]:
@@ -226,7 +258,7 @@ class _Queue:
         cursor = self._connection.execute(
             """
             UPDATE crawl_tasks
-            SET state = 'pending'
+            SET state = 'pending', finished_at = NULL
             WHERE state = 'processing'
             """
         )
@@ -251,7 +283,8 @@ class _Queue:
         self._connection.executemany(
             """
             UPDATE crawl_tasks
-            SET state = 'processing', attempts = attempts + 1, last_error = NULL
+            SET state = 'processing', attempts = attempts + 1,
+                last_error = NULL, finished_at = NULL
             WHERE url = ? AND state = 'pending'
             """,
             ((url,) for url in urls),
@@ -265,7 +298,8 @@ class _Queue:
         cursor = self._connection.execute(
             """
             UPDATE crawl_tasks
-            SET state = 'processing', attempts = attempts + 1, last_error = NULL
+            SET state = 'processing', attempts = attempts + 1,
+                last_error = NULL, finished_at = NULL
             WHERE url = ? AND state = 'pending'
             """,
             (url,),
@@ -279,16 +313,17 @@ class _Queue:
         self._connection.execute(
             """
             UPDATE crawl_tasks
-            SET state = 'done', last_error = NULL
+            SET state = 'done', last_error = NULL, finished_at = ?
             WHERE url = ?
             """,
-            (url,),
+            (datetime.now(timezone.utc).isoformat(), url),
         )
         self._connection.commit()
 
     def fail(self, url: str, error: str, max_attempts: int) -> str:
         """记录失败；未达尝试上限则重试，否则永久失败，并返回新状态。"""
 
+        finished_at = datetime.now(timezone.utc).isoformat()
         self._connection.execute(
             """
             UPDATE crawl_tasks
@@ -296,10 +331,14 @@ class _Queue:
                     WHEN attempts < ? THEN 'pending'
                     ELSE 'failed'
                 END,
-                last_error = ?
+                last_error = ?,
+                finished_at = CASE
+                    WHEN attempts < ? THEN NULL
+                    ELSE ?
+                END
             WHERE url = ?
             """,
-            (max_attempts, error, url),
+            (max_attempts, error, max_attempts, finished_at, url),
         )
         state = self._connection.execute(
             "SELECT state FROM crawl_tasks WHERE url = ?",
@@ -307,6 +346,38 @@ class _Queue:
         ).fetchone()[0]
         self._connection.commit()
         return state
+
+    def requeue(
+        self,
+        *,
+        done_before: str | None = None,
+        failed: bool = False,
+    ) -> dict[str, int]:
+        """重新排入过期的完成任务和可选的历史失败任务。"""
+
+        counts = {"done": 0, "failed": 0}
+        with self._connection:
+            if done_before is not None:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE crawl_tasks
+                    SET state = 'pending', attempts = 0, finished_at = NULL
+                    WHERE state = 'done'
+                      AND (finished_at IS NULL OR finished_at <= ?)
+                    """,
+                    (done_before,),
+                )
+                counts["done"] = cursor.rowcount
+            if failed:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE crawl_tasks
+                    SET state = 'pending', attempts = 0, finished_at = NULL
+                    WHERE state = 'failed'
+                    """
+                )
+                counts["failed"] = cursor.rowcount
+        return counts
 
     def count_by_state(self) -> dict[str, int]:
         """返回各任务状态对应的任务数量。"""

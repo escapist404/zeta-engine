@@ -1,13 +1,18 @@
 import logging
+import re
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from html import escape
+from math import isfinite
 from queue import Queue
 from threading import Condition, Lock, Thread
 from time import monotonic, sleep
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
+from resiliparse.extract.html2text import extract_plain_text
+from resiliparse.parse.html import HTMLTree
 from url_normalize import url_normalize
 
 from zeta_engine.constants import (
@@ -22,6 +27,16 @@ from zeta_engine.storage import Storage
 
 logger = logging.getLogger(__name__)
 SKIPPED_PAGE = object()
+MINIMAL_HTML_TAGS = frozenset({
+    "a", "article", "blockquote", "br", "caption", "code", "dd", "dl", "dt",
+    "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
+    "hr", "img", "li", "main", "ol", "p", "pre", "section", "strong",
+    "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+})
+MINIMAL_HTML_DROP_TAGS = frozenset({
+    "button", "canvas", "form", "iframe", "input", "noscript", "object",
+    "script", "select", "style", "svg", "template", "textarea",
+})
 
 
 def normalize_url(url: str) -> str:
@@ -62,7 +77,55 @@ def get_html(
         return None
 
 
-def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[str]]:
+def _minimal_content_html(content: object, url: str) -> str:
+    """Return a safe semantic HTML subset without interpreting page meaning."""
+
+    fragment = BeautifulSoup(str(content), "html.parser")
+    for comment in fragment.find_all(string=lambda item: isinstance(item, Comment)):
+        comment.extract()
+    for tag in fragment.find_all(MINIMAL_HTML_DROP_TAGS):
+        tag.decompose()
+
+    for tag in list(fragment.find_all(True)):
+        name = tag.name.lower()
+        if name == "b":
+            name = tag.name = "strong"
+        elif name == "i":
+            name = tag.name = "em"
+        if name not in MINIMAL_HTML_TAGS:
+            tag.unwrap()
+            continue
+
+        attributes = {}
+        if name == "a" and (href := str(tag.get("href", "")).strip()):
+            absolute = urljoin(url, href)
+            if urlsplit(absolute).scheme in {"http", "https"}:
+                attributes["href"] = normalize_url(absolute)
+        elif name == "img" and (alt := str(tag.get("alt", "")).strip()):
+            attributes["alt"] = alt
+        elif name in {"td", "th"}:
+            for attribute in ("colspan", "rowspan"):
+                value = str(tag.get(attribute, "")).strip()
+                if value.isdigit() and int(value) > 1:
+                    attributes[attribute] = value
+        elif name == "ol":
+            start = str(tag.get("start", "")).strip()
+            if re.fullmatch(r"-?\d+", start):
+                attributes["start"] = start
+        tag.attrs = attributes
+
+    for text in fragment.find_all(string=True):
+        if text.parent and text.parent.name in {"code", "pre"}:
+            continue
+        text.replace_with(re.sub(r"\s+", " ", str(text)))
+
+    return fragment.decode(formatter="minimal").strip()
+
+
+def _extract_page_beautifulsoup(
+    html: str,
+    url: str,
+) -> tuple[tuple[str, str, str, str, str], list[str]]:
     soup = BeautifulSoup(html, "html.parser")
     links = [
         normalize_url(urljoin(url, tag["href"].strip()))
@@ -93,13 +156,84 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
         if selected := soup.select_one(selector):
             content = selected
             break
+    text = content.get_text(" ", strip=True)
+    content_html = _minimal_content_html(content, url)
     document = (
         url,
         title,
-        content.get_text(" ", strip=True),
+        text,
         datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+        content_html or (f"<p>{escape(text)}</p>" if text else ""),
     )
     return document, links
+
+
+def _extract_page_resiliparse(
+    html: str,
+    url: str,
+) -> tuple[tuple[str, str, str, str, str], list[str]]:
+    tree = HTMLTree.parse(html)
+    root = tree.document
+    links = [
+        normalize_url(urljoin(url, href))
+        for tag in root.query_selector_all("a[href]")
+        if (href := tag.getattr("href").strip())
+    ]
+
+    title = ""
+    for selector in TITLE_SELECTORS:
+        headline = root.query_selector(selector)
+        if headline is not None and (title := " ".join(headline.text.split())):
+            break
+    if not title:
+        social_title = root.query_selector(SOCIAL_TITLE_SELECTOR)
+        if social_title is not None:
+            title = social_title.getattr("content").strip()
+    if not title:
+        title = " ".join((tree.title or "").split())
+
+    content = None
+    for selector in CONTENT_SELECTORS:
+        if (selected := root.query_selector(selector)) is not None:
+            content = selected
+            break
+    text = extract_plain_text(
+        content.html if content is not None else tree,
+        main_content=content is None,
+        preserve_formatting=False,
+    )
+    if not text.strip():
+        text = extract_plain_text(
+            tree,
+            main_content=False,
+            preserve_formatting=False,
+        )
+
+    content_html = _minimal_content_html(
+        content.html if content is not None else html,
+        url,
+    )
+    document = (
+        url,
+        title,
+        text,
+        datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+        content_html or (f"<p>{escape(text)}</p>" if text else ""),
+    )
+    return document, links
+
+
+def extract_page(
+    html: str,
+    url: str,
+) -> tuple[tuple[str, str, str, str, str], list[str]]:
+    if "/addons/video/" in urlsplit(url).path:
+        return _extract_page_resiliparse(html, url)
+
+    document, links = _extract_page_beautifulsoup(html, url)
+    if document[2].strip():
+        return document, links
+    return _extract_page_resiliparse(html, url)
 
 
 def crawl_urls(
@@ -111,6 +245,8 @@ def crawl_urls(
     download_workers: int = 4,
     per_host_delay: float = 1.0,
     max_attempts: int = 3,
+    refresh_after_hours: float | None = None,
+    retry_failed: bool = False,
 ) -> dict[str, int]:
     stats = {
         "scheduled": 0,
@@ -119,6 +255,8 @@ def crawl_urls(
         "skipped": 0,
         "retried": 0,
         "failed": 0,
+        "refreshed": 0,
+        "requeued_failed": 0,
     }
     if max_pages <= 0:
         return stats
@@ -126,6 +264,10 @@ def crawl_urls(
         raise ValueError("download_workers 必须大于 0")
     if max_attempts <= 0:
         raise ValueError("max_attempts 必须大于 0")
+    if refresh_after_hours is not None and (
+        not isfinite(refresh_after_hours) or refresh_after_hours < 0
+    ):
+        raise ValueError("refresh_after_hours 必须是有限的非负数")
     if storage.documents is None or storage.queue is None:
         raise ValueError("爬虫需要 document_db 和 queue_db")
 
@@ -223,6 +365,23 @@ def crawl_urls(
     if recovered:
         logger.info("恢复 %s 个中断任务", recovered)
 
+    done_before = (
+        (
+            datetime.now(timezone.utc)
+            - timedelta(hours=refresh_after_hours)
+        ).isoformat()
+        if refresh_after_hours is not None
+        else None
+    )
+    requeued = queue.requeue(
+        done_before=done_before,
+        failed=retry_failed,
+    )
+    stats["refreshed"] = requeued["done"]
+    stats["requeued_failed"] = requeued["failed"]
+    if any(requeued.values()):
+        logger.info("重新排入爬取队列: %s", requeued)
+
     schedule(list(seed_urls))
 
     for url in queue.claim_pending(max_pages - scheduled_count):
@@ -285,6 +444,7 @@ def crawl_urls(
                     title=document[1],
                     text=document[2],
                     fetched_at=document[3],
+                    content_html=document[4],
                 )
                 schedule(links)
                 queue.complete(url)

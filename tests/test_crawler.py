@@ -24,6 +24,60 @@ PAGES = {
 
 
 class CrawlerTest(unittest.TestCase):
+    def test_extract_page_keeps_only_minimal_semantic_html(self) -> None:
+        html = """
+            <html><body><main class="layout" onclick="alert(1)">
+                <h2 data-id="x">申诉处理</h2>
+                <div><p>十日内<strong style="color:red">提交</strong>。</p></div>
+                <table class="grid"><tr><th colspan="2">期限</th></tr></table>
+                <a href="/details" target="_blank">详情</a>
+                <a href="javascript:alert(1)">危险链接</a>
+                <script>不可信脚本</script>
+            </main></body></html>
+        """
+
+        document, _links = extract_page(html, "https://a.test/rules")
+        content_html = document[4]
+
+        self.assertIn("<main>", content_html)
+        self.assertIn("<h2>申诉处理</h2>", content_html)
+        self.assertIn("<p>十日内<strong>提交</strong>。</p>", content_html)
+        self.assertIn('<th colspan="2">期限</th>', content_html)
+        self.assertIn('href="https://a.test/details"', content_html)
+        self.assertNotIn("<div", content_html)
+        self.assertNotIn("class=", content_html)
+        self.assertNotIn("onclick", content_html)
+        self.assertNotIn("javascript:", content_html)
+        self.assertNotIn("不可信脚本", content_html)
+
+    def test_extract_page_routes_to_resiliparse_only_when_needed(self) -> None:
+        html = """
+            <html><head><title>页面标题</title></head><body>
+                <div class="notice_list"></div>
+                <section><a href="/detail">Resiliparse 正文</a></section>
+            </body></html>
+        """
+
+        with patch("zeta_engine.crawler._extract_page_beautifulsoup") as parser:
+            video, video_links = extract_page(
+                html,
+                "https://gsai.ruc.edu.cn/addons/video/video/play.html?id=1",
+            )
+            parser.assert_not_called()
+        fallback, fallback_links = extract_page(html, "https://a.test/empty")
+        with patch("zeta_engine.crawler._extract_page_resiliparse") as parser:
+            beautifulsoup, _ = extract_page(
+                "<html><body><main>BeautifulSoup 正文</main></body></html>",
+                "https://a.test/article",
+            )
+            parser.assert_not_called()
+
+        self.assertIn("Resiliparse 正文", video[2])
+        self.assertIn("Resiliparse 正文", fallback[2])
+        self.assertEqual(beautifulsoup[2], "BeautifulSoup 正文")
+        self.assertEqual(video_links, ["https://gsai.ruc.edu.cn/detail"])
+        self.assertEqual(fallback_links, ["https://a.test/detail"])
+
     def test_extract_page_keeps_links_but_indexes_only_main_content(self) -> None:
         cases = (
             (
@@ -222,6 +276,74 @@ class CrawlerTest(unittest.TestCase):
             self.assertEqual(stats["processed"], 2)
             self.assertEqual(stats["retried"], 1)
             self.assertEqual(stats["saved"], 1)
+            self.assertEqual(storage.queue.count_by_state(), {"done": 1})
+
+    def test_refreshes_done_pages_and_retries_historical_failures(self) -> None:
+        old_page = "<html><title>A</title><body>旧正文</body></html>"
+        new_page = "<html><title>A</title><body>新正文</body></html>"
+        with Storage(
+            document_db=":memory:",
+            queue_db=":memory:",
+        ) as storage:
+            with patch(
+                "zeta_engine.crawler.get_html",
+                side_effect=[
+                    ("https://a.test/", old_page),
+                    ("https://a.test/", new_page),
+                ],
+            ) as get_html:
+                crawl_urls(storage, ["https://a.test/"], per_host_delay=0)
+                unchanged = crawl_urls(
+                    storage,
+                    ["https://a.test/"],
+                    per_host_delay=0,
+                )
+                refreshed = crawl_urls(
+                    storage,
+                    ["https://a.test/"],
+                    per_host_delay=0,
+                    refresh_after_hours=0,
+                )
+
+            assert storage.documents is not None
+            self.assertEqual(get_html.call_count, 2)
+            self.assertEqual(unchanged["scheduled"], 0)
+            self.assertEqual(refreshed["refreshed"], 1)
+            self.assertEqual(storage.documents.get(1)[2], "新正文")
+
+        with Storage(
+            document_db=":memory:",
+            queue_db=":memory:",
+        ) as storage:
+            with patch(
+                "zeta_engine.crawler.get_html",
+                side_effect=[
+                    None,
+                    None,
+                    None,
+                    (
+                        "https://a.test/",
+                        "<html><title>A</title><body>恢复正文</body></html>",
+                    ),
+                ],
+            ) as get_html:
+                crawl_urls(storage, ["https://a.test/"], per_host_delay=0)
+                unchanged = crawl_urls(
+                    storage,
+                    ["https://a.test/"],
+                    per_host_delay=0,
+                )
+                retried = crawl_urls(
+                    storage,
+                    ["https://a.test/"],
+                    per_host_delay=0,
+                    retry_failed=True,
+                )
+
+            assert storage.queue is not None
+            self.assertEqual(get_html.call_count, 4)
+            self.assertEqual(unchanged["scheduled"], 0)
+            self.assertEqual(retried["requeued_failed"], 1)
             self.assertEqual(storage.queue.count_by_state(), {"done": 1})
 
     @patch("zeta_engine.crawler.get_html", return_value=SKIPPED_PAGE)

@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+from math import isfinite
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -40,6 +41,10 @@ def configure_logging(log_file: Path) -> None:
 
 
 def run_crawler(args: argparse.Namespace) -> int:
+    if args.refresh_after_hours is not None and (
+        not isfinite(args.refresh_after_hours) or args.refresh_after_hours < 0
+    ):
+        raise SystemExit("--refresh-after-hours 必须是有限的非负数")
     args.document_db.parent.mkdir(parents=True, exist_ok=True)
     args.queue_db.parent.mkdir(parents=True, exist_ok=True)
     configure_logging(args.log_file)
@@ -55,6 +60,8 @@ def run_crawler(args: argparse.Namespace) -> int:
             max_pages=args.max_pages,
             download_workers=args.workers,
             per_host_delay=args.delay,
+            refresh_after_hours=args.refresh_after_hours,
+            retry_failed=args.retry_failed,
         )
 
     logging.info("本次统计: %s", stats)
@@ -321,6 +328,16 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--max-pages", type=int, default=500_000)
     crawl.add_argument("--workers", type=int, default=16)
     crawl.add_argument("--delay", type=float, default=0.2)
+    crawl.add_argument(
+        "--refresh-after-hours",
+        type=float,
+        help="重新抓取完成时间早于指定小时数的页面；0 表示全部",
+    )
+    crawl.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="重新尝试历史失败任务",
+    )
     crawl.set_defaults(handler=run_crawler)
 
     stats = commands.add_parser("stats", help="查看数据库统计")

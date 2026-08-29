@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from zeta_engine.service import (
+    RAG_DOCUMENT_WINDOW_CHARS,
     _published_at,
     _query_snippet,
     answer_question,
@@ -52,6 +53,10 @@ class ServiceTest(unittest.TestCase):
                     title="教师主页",
                     text=text,
                     fetched_at="2026-08-28T10:00:00",
+                    content_html=(
+                        "<main><p>个人简介。</p><p>教授课程："
+                        "《人工智能综合设计》大一夏季学期。</p></main>"
+                    ),
                 )
 
             with patch(
@@ -68,8 +73,14 @@ class ServiceTest(unittest.TestCase):
 
             self.assertIn("人工智能综合设计", results[0]["snippet"])
             self.assertEqual(results[0]["content"], text_normalize(text))
+            self.assertEqual(
+                results[0]["structured_content"],
+                "<main><p>个人简介。</p><p>教授课程："
+                "《人工智能综合设计》大一夏季学期。</p></main>",
+            )
 
     def test_answer_question_uses_shared_search_service(self) -> None:
+        self.assertGreater(RAG_DOCUMENT_WINDOW_CHARS, 3_000)
         result = {
             "title": "标题",
             "url": "https://example.test",
@@ -102,7 +113,10 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(response["answer"], "问题")
         warmup.assert_called_once_with(Path("data/dense"), device=None)
         self.assertEqual(search.call_args.kwargs["ranking"], "hybrid")
-        self.assertEqual(search.call_args.kwargs["content_limit"], 3000)
+        self.assertEqual(
+            search.call_args.kwargs["content_limit"],
+            RAG_DOCUMENT_WINDOW_CHARS,
+        )
 
     def test_answer_question_warms_dense_before_agent(self) -> None:
         calls = []

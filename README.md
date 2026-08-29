@@ -32,6 +32,15 @@ uv run zeta-engine crawl \
   --delay 0.5
 ```
 
+重新抓取超过 24 小时的已完成页面，并重新尝试历史失败任务：
+
+```bash
+uv run zeta-engine crawl --refresh-after-hours 24 --retry-failed
+```
+
+`--refresh-after-hours 0` 会重新抓取全部已完成页面。旧版队列没有完成时间，
+因此升级后第一次使用该参数时，历史已完成页面都会进入刷新队列。
+
 查看全部参数：
 
 ```bash

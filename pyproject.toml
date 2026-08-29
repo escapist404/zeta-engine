@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=2.5.2",
     "openai>=3.5.0",
     "requests>=2.34.2",
+    "resiliparse>=1.0.9",
     "sentence-transformers>=6.0.0",
     "url-normalize>=3.0.0",
 ]

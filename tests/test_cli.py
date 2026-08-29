@@ -11,6 +11,32 @@ from zeta_engine.storage import Storage
 
 
 class CliTest(unittest.TestCase):
+    def test_passes_crawl_refresh_options(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = build_parser().parse_args([
+                "crawl",
+                "--document-db", str(root / "documents.db"),
+                "--queue-db", str(root / "queue.db"),
+                "--log-file", str(root / "crawl.log"),
+                "--refresh-after-hours", "24",
+                "--retry-failed",
+            ])
+            with (
+                patch("zeta_engine.cli.configure_logging"),
+                patch(
+                    "zeta_engine.cli.crawl_urls",
+                    return_value={},
+                ) as crawl_urls,
+            ):
+                self.assertEqual(args.handler(args), 0)
+
+            self.assertEqual(
+                crawl_urls.call_args.kwargs["refresh_after_hours"],
+                24,
+            )
+            self.assertTrue(crawl_urls.call_args.kwargs["retry_failed"])
+
     def test_runs_evaluation_from_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document_db = Path(directory) / "documents.db"
