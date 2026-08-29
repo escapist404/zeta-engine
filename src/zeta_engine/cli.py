@@ -15,6 +15,7 @@ from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation, run_rag_evaluatio
 from zeta_engine.index import build_index
 from zeta_engine.rag import AGENT_MAX_CYCLES
 from zeta_engine.search import (
+    DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
@@ -549,7 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_INDEX_DIR,
     )
     search.add_argument("--device")
-    search.add_argument("--alpha", type=float, default=.5)
+    search.add_argument("--alpha", type=float, default=DEFAULT_HYBRID_ALPHA)
     search.add_argument(
         "--reranker-model",
         type=Path,
@@ -589,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_INDEX_DIR,
     )
     rag.add_argument("--device")
-    rag.add_argument("--alpha", type=float, default=.5)
+    rag.add_argument("--alpha", type=float, default=DEFAULT_HYBRID_ALPHA)
     rag.set_defaults(handler=run_rag)
 
     server = commands.add_parser("serve", help="启动 Web 搜索服务")
@@ -663,7 +664,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation.add_argument("--device")
     evaluation.add_argument("--top-k", type=int, default=5)
-    evaluation.add_argument("--alpha", type=float, default=.5)
+    evaluation.add_argument("--alpha", type=float, default=DEFAULT_HYBRID_ALPHA)
     evaluation.add_argument(
         "--reranker-model",
         type=Path,

@@ -109,6 +109,10 @@ class WebTest(unittest.TestCase):
                     search_reranked.call_args.kwargs["batch_size"],
                     16,
                 )
+                self.assertEqual(
+                    search_reranked.call_args.kwargs["alpha"],
+                    .38,
+                )
 
                 rag_results = [{
                     "title": "RAG 来源",

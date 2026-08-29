@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 from zeta_engine.dense import DEFAULT_INDEX_DIR
 from zeta_engine.rag import AGENT_MAX_CYCLES
 from zeta_engine.search import (
+    DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
@@ -63,7 +64,9 @@ def create_server(
                 return
 
             try:
-                alpha = float(parameters.get("alpha", ["0.5"])[0])
+                alpha = float(parameters.get(
+                    "alpha", [str(DEFAULT_HYBRID_ALPHA)]
+                )[0])
             except ValueError:
                 self._json({"error": "alpha 必须是数字"}, 400)
                 return

@@ -128,7 +128,7 @@ class EvalTest(unittest.TestCase):
             top_k=7,
             dense_index=Path("data/dense"),
             device=None,
-            alpha=.5,
+            alpha=.38,
         )
         warmup.assert_called_once_with(Path("data/dense"), device=None)
         self.assertEqual(calls, ["idx", "bge", "login"])

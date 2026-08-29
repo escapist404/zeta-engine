@@ -5,6 +5,7 @@ from pathlib import Path
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
 from zeta_engine.rag import AGENT_MAX_CYCLES, agentic_rag_answer
 from zeta_engine.search import (
+    DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
@@ -85,7 +86,7 @@ def search_documents(
     rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
     reranker_batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
     device: str | None = None,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     content_limit: int = 0,
 ) -> list[dict[str, str]]:
     if content_limit < 0:
@@ -179,7 +180,7 @@ def answer_question(
     *,
     dense_index: str | Path = DEFAULT_INDEX_DIR,
     device: str | None = None,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     max_cycles: int = AGENT_MAX_CYCLES,
     debug: bool = False,
 ) -> dict[str, object]:

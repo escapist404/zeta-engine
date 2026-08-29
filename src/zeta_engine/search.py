@@ -17,6 +17,7 @@ from zeta_engine.tokenizer import (
 DEFAULT_RERANKER_MODEL_PATH = Path("models/bge-reranker-base")
 DEFAULT_RERANK_CANDIDATES = 50
 DEFAULT_RERANK_BATCH_SIZE = 16
+DEFAULT_HYBRID_ALPHA = .38
 RERANK_MAX_TOKENS = 512
 RERANK_TITLE_MAX_TOKENS = 64
 RERANK_OVERLAP_TOKENS = 64
@@ -229,7 +230,7 @@ def search_hybrid_with_snippets(
     dense_index: str | Path = DEFAULT_INDEX_DIR,
     *,
     limit: int = 20,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     device: str | None = None,
 ) -> tuple[list[int], dict[int, str]]:
     """Return fused document IDs and available Dense snippets."""
@@ -293,7 +294,7 @@ def search_hybrid(
     dense_index: str | Path = DEFAULT_INDEX_DIR,
     *,
     limit: int = 20,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     device: str | None = None,
 ) -> list[int]:
     """Combine per-query normalized BM25F and Dense scores linearly."""
@@ -436,7 +437,7 @@ def search_reranked(
     limit: int = 20,
     candidate_limit: int = DEFAULT_RERANK_CANDIDATES,
     batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     device: str | None = None,
 ) -> list[int]:
     """Rerank Hybrid candidates with a query-document CrossEncoder."""

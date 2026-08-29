@@ -82,14 +82,14 @@ uv run zeta-engine search "中国人民大学"
 uv run zeta-engine search "中国人民大学" --phrase --limit 20
 uv run zeta-engine search "中国人民大学" --ranking bm25f
 uv run zeta-engine search "经济困难学生如何获得帮助" --ranking dense --device mps
-uv run zeta-engine search "经济困难学生如何获得帮助" --ranking hybrid --alpha 0.5 --device mps
+uv run zeta-engine search "经济困难学生如何获得帮助" --ranking hybrid --alpha 0.38 --device mps
 uv run zeta-engine search "经济困难学生如何获得帮助" --ranking rerank --device mps
 ```
 
 `--ranking` 可选 `bm25f`、`dense`、`hybrid` 或 `rerank`，默认为 `hybrid`。
 Hybrid 将两路分数分别做
 min-max 归一化后线性融合；
-`--alpha 0` 等于 BM25F，`--alpha 1` 等于 Dense，默认为 `0.5`。
+`--alpha 0` 等于 BM25F，`--alpha 1` 等于 Dense，默认为 `0.38`。
 `rerank` 默认将 Hybrid 的前 50 个候选切成重叠 passage，按 query 的连续字符
 匹配动态选出每篇文档最相关的 1–2 个 passage，再由 CrossEncoder 打分并以 MaxP
 聚合；可用
@@ -110,7 +110,7 @@ RAG 默认最多运行 3 轮：每轮观察累计证据后，由 Agent 决定直
 Hybrid 检索，可调整轮次、Top-K 和融合权重：
 
 ```bash
-uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --alpha 0.5
+uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --alpha 0.38
 ```
 
 使用 `--debug` 可输出每轮实际查询、新结果预览、累计证据数量、上下文长度和
@@ -132,7 +132,7 @@ uv run zeta-engine serve
 打开 <http://127.0.0.1:8000>。搜索接口为
 `GET /api/search?q=关键词&limit=20&ranking=dense`；`ranking` 默认为 `hybrid`。
 Hybrid 接口示例为
-`GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
+`GET /api/search?q=关键词&ranking=hybrid&alpha=0.38`。
 CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
 RAG 可在页面下拉菜单中选择，也可使用
 `GET /api/search?q=问题&ranking=rag&max_cycles=4`；Agent 使用 Hybrid 检索，返回模型回答和各轮实际使用的来源。追加 `debug=1` 时，响应中还会包含结构化的 `trace`。
@@ -170,7 +170,7 @@ uv run zeta-engine eval --base-url http://localhost:8080
 
 ```bash
 uv run zeta-engine eval --ranking dense --device mps
-uv run zeta-engine eval --ranking hybrid --alpha 0.5 --device mps
+uv run zeta-engine eval --ranking hybrid --alpha 0.38 --device mps
 uv run zeta-engine eval --ranking rerank --device mps
 ```
 

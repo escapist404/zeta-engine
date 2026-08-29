@@ -12,6 +12,7 @@ import requests
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
 from zeta_engine.search import (
+    DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
@@ -208,7 +209,7 @@ def evaluate(
     rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
     reranker_batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
     device: str | None = None,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
 ) -> list[str]:
     """Return matching document URLs ordered by the selected ranking."""
     assert storage.documents is not None
@@ -266,7 +267,7 @@ def run_evaluation(
     rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
     reranker_batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
     device: str | None = None,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
 ) -> None:
     idx = input_idx()
     passwd = input_passwd()
@@ -314,7 +315,7 @@ def run_rag_evaluation(
     base_url: str = DEFAULT_BASE_URL,
     dense_index: str | Path = DEFAULT_INDEX_DIR,
     device: str | None = None,
-    alpha: float = .5,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
     top_k: int = 5,
 ) -> None:
     idx = input_idx()

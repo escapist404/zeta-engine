@@ -67,7 +67,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device=None,
-                alpha=.5,
+                alpha=.38,
             )
 
     def test_runs_rag_evaluation_from_cli(self) -> None:
@@ -100,7 +100,7 @@ class CliTest(unittest.TestCase):
                 base_url=DEFAULT_BASE_URL,
                 dense_index=dense_index,
                 device=None,
-                alpha=.5,
+                alpha=.38,
                 top_k=8,
             )
 
@@ -158,7 +158,7 @@ class CliTest(unittest.TestCase):
                 top_k=3,
                 dense_index=dense_index,
                 device="mps",
-                alpha=.5,
+                alpha=.38,
                 max_cycles=6,
                 debug=True,
             )
@@ -279,7 +279,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device="mps",
-                alpha=.5,
+                alpha=.38,
             )
             self.assertIn("dense 结果", output.getvalue())
             self.assertIn("最佳分块10", output.getvalue())
@@ -303,7 +303,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device="mps",
-                alpha=.5,
+                alpha=.38,
             )
 
             index_db = root / "index.db"
@@ -366,7 +366,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=40,
                 reranker_batch_size=8,
                 device="mps",
-                alpha=.5,
+                alpha=.38,
             )
 
     def test_builds_search_index_and_reports_term_count(self) -> None:
