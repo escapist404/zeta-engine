@@ -115,11 +115,7 @@ class EvalTest(unittest.TestCase):
             "index.db",
             "问题",
             top_k=7,
-            ranking="hybrid",
             dense_index=Path("data/dense"),
-            reranker_model=Path("models/bge-reranker-base"),
-            rerank_candidates=50,
-            reranker_batch_size=16,
             device=None,
             alpha=.5,
         )

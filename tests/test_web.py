@@ -10,6 +10,7 @@ from urllib.request import urlopen
 
 from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
+from zeta_engine.rag import AGENT_MAX_CYCLES
 from zeta_engine.storage import Storage
 from zeta_engine.web import create_server
 
@@ -139,12 +140,8 @@ class WebTest(unittest.TestCase):
                 )
                 self.assertEqual(answer_question.call_args.kwargs["top_k"], 5)
                 self.assertEqual(
-                    answer_question.call_args.kwargs["ranking"],
-                    "hybrid",
-                )
-                self.assertEqual(
                     answer_question.call_args.kwargs["max_cycles"],
-                    4,
+                    AGENT_MAX_CYCLES,
                 )
                 self.assertTrue(answer_question.call_args.kwargs["debug"])
 

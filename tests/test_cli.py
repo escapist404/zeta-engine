@@ -72,11 +72,7 @@ class CliTest(unittest.TestCase):
                 document_db,
                 index_db,
                 base_url=DEFAULT_BASE_URL,
-                ranking="hybrid",
                 dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
                 device=None,
                 alpha=.5,
                 top_k=8,
@@ -86,8 +82,10 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             document_db = root / "documents.db"
+            index_db = root / "index.db"
             dense_index = root / "dense"
             document_db.touch()
+            index_db.touch()
             dense_index.mkdir()
             (dense_index / "metadata.json").touch()
             result = {
@@ -99,6 +97,7 @@ class CliTest(unittest.TestCase):
             args = build_parser().parse_args([
                 "rag", "如何申请资助？",
                 "--document-db", str(document_db),
+                "--index-db", str(index_db),
                 "--dense-index", str(dense_index),
                 "--top-k", "3",
                 "--max-cycles", "6",
@@ -124,18 +123,14 @@ class CliTest(unittest.TestCase):
             self.assertIn('"action": "answer"', output.getvalue())
             self.assertEqual(
                 answer_question.call_args.args,
-                (document_db, Path("data/index.db"), "如何申请资助？"),
+                (document_db, index_db, "如何申请资助？"),
             )
             answer_question.assert_called_once_with(
                 document_db,
-                Path("data/index.db"),
+                index_db,
                 "如何申请资助？",
                 top_k=3,
-                ranking="dense",
                 dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
                 device="mps",
                 alpha=.5,
                 max_cycles=6,

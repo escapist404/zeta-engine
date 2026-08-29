@@ -183,15 +183,10 @@ def run_search(args: argparse.Namespace) -> int:
 def run_rag(args: argparse.Namespace) -> int:
     if not args.document_db.is_file():
         raise SystemExit(f"数据库不存在: {args.document_db}")
-    if args.ranking != "dense" and not args.index_db.is_file():
+    if not args.index_db.is_file():
         raise SystemExit(f"数据库不存在: {args.index_db}")
-    if (
-        args.ranking in {"dense", "hybrid", "rerank"}
-        and not (args.dense_index / "metadata.json").is_file()
-    ):
+    if not (args.dense_index / "metadata.json").is_file():
         raise SystemExit(f"Dense 索引不存在: {args.dense_index}")
-    if args.ranking == "rerank" and not args.reranker_model.is_dir():
-        raise SystemExit(f"Reranker 模型目录不存在: {args.reranker_model}")
     if not 0. <= args.alpha <= 1.:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
     if args.top_k <= 0:
@@ -205,11 +200,7 @@ def run_rag(args: argparse.Namespace) -> int:
             args.index_db,
             args.query,
             top_k=args.top_k,
-            ranking=args.ranking,
             dense_index=args.dense_index,
-            reranker_model=args.reranker_model,
-            rerank_candidates=DEFAULT_RERANK_CANDIDATES,
-            reranker_batch_size=DEFAULT_RERANK_BATCH_SIZE,
             device=args.device,
             alpha=args.alpha,
             max_cycles=args.max_cycles,
@@ -256,36 +247,47 @@ def run_server(args: argparse.Namespace) -> int:
 def run_evaluator(args: argparse.Namespace) -> int:
     if not args.document_db.is_file():
         raise SystemExit(f"数据库不存在: {args.document_db}")
-    if args.ranking != "dense" and not args.index_db.is_file():
+    is_rag = args.mode == "rag"
+    if is_rag and args.ranking != "hybrid":
+        raise SystemExit("RAG 固定使用 hybrid，--ranking 仅用于搜索评测")
+    if (is_rag or args.ranking != "dense") and not args.index_db.is_file():
         raise SystemExit(f"数据库不存在: {args.index_db}")
     if (
-        args.ranking in {"dense", "hybrid", "rerank"}
+        (is_rag or args.ranking in {"dense", "hybrid", "rerank"})
         and not (args.dense_index / "metadata.json").is_file()
     ):
         raise SystemExit(f"Dense 索引不存在: {args.dense_index}")
-    if args.ranking == "rerank" and not args.reranker_model.is_dir():
+    if (
+        not is_rag
+        and args.ranking == "rerank"
+        and not args.reranker_model.is_dir()
+    ):
         raise SystemExit(f"Reranker 模型目录不存在: {args.reranker_model}")
-    if args.rerank_candidates <= 0:
+    if not is_rag and args.rerank_candidates <= 0:
         raise SystemExit("--rerank-candidates 必须大于 0")
-    if args.reranker_batch_size <= 0:
+    if not is_rag and args.reranker_batch_size <= 0:
         raise SystemExit("--reranker-batch-size 必须大于 0")
     if not 0. <= args.alpha <= 1.:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
-    if args.mode == "rag" and args.top_k <= 0:
+    if is_rag and args.top_k <= 0:
         raise SystemExit("--top-k 必须大于 0")
-    evaluator = run_rag_evaluation if args.mode == "rag" else run_evaluation
     kwargs = {
         "base_url": args.base_url,
-        "ranking": args.ranking,
         "dense_index": args.dense_index,
-        "reranker_model": args.reranker_model,
-        "rerank_candidates": args.rerank_candidates,
-        "reranker_batch_size": args.reranker_batch_size,
         "device": args.device,
         "alpha": args.alpha,
     }
-    if args.mode == "rag":
+    if is_rag:
         kwargs["top_k"] = args.top_k
+        evaluator = run_rag_evaluation
+    else:
+        kwargs.update({
+            "ranking": args.ranking,
+            "reranker_model": args.reranker_model,
+            "rerank_candidates": args.rerank_candidates,
+            "reranker_batch_size": args.reranker_batch_size,
+        })
+        evaluator = run_evaluation
     evaluator(
         args.document_db,
         args.index_db,
@@ -433,12 +435,6 @@ def build_parser() -> argparse.ArgumentParser:
     rag.add_argument("--max-cycles", type=int, default=AGENT_MAX_CYCLES)
     rag.add_argument("--debug", action="store_true")
     rag.add_argument(
-        "--ranking",
-        choices=("bm25f", "dense", "hybrid", "rerank"),
-        default="dense",
-        help="用于提供证据的排名算法",
-    )
-    rag.add_argument(
         "--document-db",
         type=Path,
         default=Path("data/zeta.db"),
@@ -452,11 +448,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--dense-index",
         type=Path,
         default=DEFAULT_INDEX_DIR,
-    )
-    rag.add_argument(
-        "--reranker-model",
-        type=Path,
-        default=DEFAULT_RERANKER_MODEL_PATH,
     )
     rag.add_argument("--device")
     rag.add_argument("--alpha", type=float, default=.5)
@@ -524,6 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ranking",
         choices=("bm25f", "dense", "hybrid", "rerank"),
         default="hybrid",
+        help="搜索评测排名算法；RAG 固定使用 hybrid",
     )
     evaluation.add_argument(
         "--dense-index",

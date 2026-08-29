@@ -96,12 +96,12 @@ export ZETA_LLM_API_KEY="你的 API Key"
 uv run zeta-engine rag "经济困难学生如何申请资助？" --device mps
 ```
 
-RAG 默认最多运行 4 轮：每轮观察累计证据后，由 Agent 决定直接回答或生成
-最多 3 个新查询；达到轮次上限时使用已有证据回答。CLI 默认使用 Dense，可调整
-轮次、Top-K 和底层排名方式：
+RAG 默认最多运行 3 轮：每轮观察累计证据后，由 Agent 决定直接回答或生成
+最多 3 个新查询；达到轮次上限时使用已有证据回答。CLI、Web 和评测统一使用
+Hybrid 检索，可调整轮次、Top-K 和融合权重：
 
 ```bash
-uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --ranking hybrid --alpha 0.5
+uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --alpha 0.5
 ```
 
 使用 `--debug` 可输出每轮实际查询、新结果预览、累计证据数量、上下文长度和

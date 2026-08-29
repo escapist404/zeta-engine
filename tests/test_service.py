@@ -95,12 +95,11 @@ class ServiceTest(unittest.TestCase):
                 "index.db",
                 "问题",
                 top_k=3,
-                ranking="dense",
                 debug=True,
             )
 
         self.assertEqual(response["answer"], "问题")
-        self.assertEqual(search.call_args.kwargs["ranking"], "dense")
+        self.assertEqual(search.call_args.kwargs["ranking"], "hybrid")
         self.assertEqual(search.call_args.kwargs["content_limit"], 3000)
 
 

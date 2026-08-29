@@ -93,7 +93,6 @@ def create_server(
                         index_db,
                         query,
                         top_k=limit,
-                        ranking="hybrid",
                         dense_index=dense_index,
                         device=device,
                         alpha=alpha,
@@ -104,6 +103,8 @@ def create_server(
                     response_payload = {
                         "query": query,
                         "answer": payload["answer"],
+                        "claims": payload.get("claims", []),
+                        "sources": payload.get("sources", []),
                         "count": len(results),
                         "results": results,
                     }
