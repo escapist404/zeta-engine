@@ -11,7 +11,6 @@ from urllib.parse import urljoin
 import requests
 
 from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
-from zeta_engine.rag import agentic_rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -20,8 +19,8 @@ from zeta_engine.search import (
     search_hybrid,
     search_reranked,
 )
+from zeta_engine.service import answer_question
 from zeta_engine.storage import Storage
-from zeta_engine.web import search_documents
 
 DEFAULT_BASE_URL = "http://10.47.253.18:8080/"
 
@@ -326,28 +325,24 @@ def run_rag_evaluation(
     passwd = input_passwd()
     queries = rag_login(base_url, idx, passwd)
 
-    def search_fn(query: str, limit: int) -> list[dict[str, str]]:
-        return search_documents(
-            document_db,
-            index_db,
-            query,
-            limit,
-            ranking=ranking,
-            dense_index=dense_index,
-            reranker_model=reranker_model,
-            rerank_candidates=rerank_candidates,
-            reranker_batch_size=reranker_batch_size,
-            device=device,
-            alpha=alpha,
-            content_limit=3000,
-        )
-
     answers: list[str] = []
     elapsed_seconds: list[float] = []
     for number, query in enumerate(queries, start=1):
         started = time.monotonic()
         try:
-            response = agentic_rag_answer(query, search_fn, top_k=top_k)
+            response = answer_question(
+                document_db,
+                index_db,
+                query,
+                top_k=top_k,
+                ranking=ranking,
+                dense_index=dense_index,
+                reranker_model=reranker_model,
+                rerank_candidates=rerank_candidates,
+                reranker_batch_size=reranker_batch_size,
+                device=device,
+                alpha=alpha,
+            )
             answer = response["answer"]
         except Exception as exc:
             print(f"RAG question {number} failed: {type(exc).__name__}")

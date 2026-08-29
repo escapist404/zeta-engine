@@ -102,11 +102,19 @@ export ZETA_LLM_API_KEY="你的 API Key"
 uv run zeta-engine rag "经济困难学生如何申请资助？" --device mps
 ```
 
-RAG 最多运行两轮：首轮检索原问题，证据不足时由 Agent 生成最多 3 个
-补充查询，第二轮必须回答。CLI 默认使用 Dense，可调整 Top-K 和底层排名方式：
+RAG 默认最多运行 4 轮：每轮观察累计证据后，由 Agent 决定直接回答或生成
+最多 3 个新查询；达到轮次上限时使用已有证据回答。CLI 默认使用 Dense，可调整
+轮次、Top-K 和底层排名方式：
 
 ```bash
-uv run zeta-engine rag "问题" --top-k 8 --ranking hybrid --alpha 0.5
+uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --ranking hybrid --alpha 0.5
+```
+
+使用 `--debug` 可输出每轮实际查询、新结果预览、累计证据数量、上下文长度和
+模型动作：
+
+```bash
+uv run zeta-engine rag "问题" --debug
 ```
 
 ### Web 前端
@@ -124,7 +132,7 @@ Hybrid 接口示例为
 `GET /api/search?q=关键词&ranking=hybrid&alpha=0.5`。
 CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
 RAG 可在页面下拉菜单中选择，也可使用
-`GET /api/search?q=问题&ranking=rag`；Agent 使用 Hybrid 检索，返回模型回答和两轮中实际使用的来源。
+`GET /api/search?q=问题&ranking=rag&max_cycles=4`；Agent 使用 Hybrid 检索，返回模型回答和各轮实际使用的来源。追加 `debug=1` 时，响应中还会包含结构化的 `trace`。
 
 ### 统计
 

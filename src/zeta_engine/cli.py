@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,23 +10,18 @@ from zeta_engine.dense import (
     DEFAULT_INDEX_DIR,
     DEFAULT_MODEL_PATH,
     build_dense_index,
-    search_dense,
 )
 from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation, run_rag_evaluation
 from zeta_engine.index import build_index
-from zeta_engine.rag import agentic_rag_answer
+from zeta_engine.rag import AGENT_MAX_CYCLES
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
-    search_bm25f,
-    search_hybrid,
-    search_phrase,
-    search_reranked,
 )
+from zeta_engine.service import answer_question, search_documents
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize
-from zeta_engine.web import search_documents, serve
+from zeta_engine.web import serve
 
 
 def configure_logging(log_file: Path) -> None:
@@ -162,53 +158,25 @@ def run_search(args: argparse.Namespace) -> int:
     if args.reranker_batch_size <= 0:
         raise SystemExit("--reranker-batch-size 必须大于 0")
 
-    with Storage(
-        document_db=args.document_db,
-        index_db=None if use_dense else args.index_db,
-    ) as storage:
-        snippets = {}
-        if use_dense:
-            hits = search_dense(
-                args.query,
-                args.dense_index,
-                limit=args.limit,
-                device=args.device,
-            )
-            document_ids = [hit.document_id for hit in hits]
-            snippets = {hit.document_id: hit.snippet for hit in hits}
-        elif args.phrase:
-            document_ids = search_phrase(storage, args.query)
-        elif args.ranking == "hybrid":
-            document_ids = search_hybrid(
-                storage,
-                args.query,
-                args.dense_index,
-                limit=args.limit,
-                alpha=args.alpha,
-                device=args.device,
-            )
-        elif args.ranking == "rerank":
-            document_ids = search_reranked(
-                storage,
-                args.query,
-                args.dense_index,
-                reranker_model=args.reranker_model,
-                limit=args.limit,
-                candidate_limit=args.rerank_candidates,
-                batch_size=args.reranker_batch_size,
-                alpha=args.alpha,
-                device=args.device,
-            )
-        else:
-            document_ids = search_bm25f(storage, args.query)
-        for rank, document_id in enumerate(document_ids[:args.limit], start=1):
-            document = storage.documents.get(document_id)
-            if document is None:
-                continue
-            url, title, text, _fetched_at = document
-            title = text_normalize(title) or url
-            snippet = text_normalize(snippets.get(document_id, text))[:160]
-            print(f"{rank}. {title}\n   {url}\n   {snippet}\n")
+    results = search_documents(
+        args.document_db,
+        args.index_db,
+        args.query,
+        args.limit,
+        ranking="phrase" if args.phrase else args.ranking,
+        dense_index=args.dense_index,
+        reranker_model=args.reranker_model,
+        rerank_candidates=args.rerank_candidates,
+        reranker_batch_size=args.reranker_batch_size,
+        device=args.device,
+        alpha=args.alpha,
+    )
+    for rank, result in enumerate(results, start=1):
+        print(
+            f"{rank}. {result['title']}\n"
+            f"   {result['url']}\n"
+            f"   {result['snippet'][:160]}\n"
+        )
 
     return 0
 
@@ -229,13 +197,15 @@ def run_rag(args: argparse.Namespace) -> int:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
     if args.top_k <= 0:
         raise SystemExit("--top-k 必须大于 0")
+    if not 1 <= args.max_cycles <= 8:
+        raise SystemExit("--max-cycles 必须在 1 到 8 之间")
 
-    def search_fn(query: str, top_k: int) -> list[dict[str, str]]:
-        return search_documents(
+    try:
+        response = answer_question(
             args.document_db,
             args.index_db,
-            query,
-            top_k,
+            args.query,
+            top_k=args.top_k,
             ranking=args.ranking,
             dense_index=args.dense_index,
             reranker_model=args.reranker_model,
@@ -243,14 +213,16 @@ def run_rag(args: argparse.Namespace) -> int:
             reranker_batch_size=DEFAULT_RERANK_BATCH_SIZE,
             device=args.device,
             alpha=args.alpha,
-            content_limit=3000,
+            max_cycles=args.max_cycles,
+            debug=args.debug,
         )
-
-    try:
-        response = agentic_rag_answer(args.query, search_fn, top_k=args.top_k)
     except RuntimeError as error:
         raise SystemExit(str(error)) from error
     print(f"回答\n{response['answer']}\n")
+    if args.debug:
+        print("Debug Trace")
+        print(json.dumps(response.get("trace", []), ensure_ascii=False, indent=2))
+        print()
     print("搜索结果")
     for rank, result in enumerate(response["results"], start=1):
         print(
@@ -465,6 +437,8 @@ def build_parser() -> argparse.ArgumentParser:
     rag = commands.add_parser("rag", help="检索并生成回答")
     rag.add_argument("query", help="问题文本")
     rag.add_argument("--top-k", type=int, default=5)
+    rag.add_argument("--max-cycles", type=int, default=AGENT_MAX_CYCLES)
+    rag.add_argument("--debug", action="store_true")
     rag.add_argument(
         "--ranking",
         choices=("bm25f", "dense", "hybrid", "rerank"),

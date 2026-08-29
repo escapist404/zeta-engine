@@ -81,8 +81,7 @@ class EvalTest(unittest.TestCase):
             "snippet": "材料",
         }]
 
-        def answer(query, search_fn, *, top_k):
-            self.assertEqual(search_fn(query, top_k), result)
+        def answer(document_db, index_db, query, **kwargs):
             return {"answer": f"回答 {query}", "results": result}
 
         with (
@@ -90,13 +89,9 @@ class EvalTest(unittest.TestCase):
             patch("zeta_engine.eval.input_passwd", return_value=""),
             patch("zeta_engine.eval.rag_login", return_value=["问题"]),
             patch(
-                "zeta_engine.eval.search_documents",
-                return_value=result,
-            ) as search_documents,
-            patch(
-                "zeta_engine.eval.agentic_rag_answer",
+                "zeta_engine.eval.answer_question",
                 side_effect=answer,
-            ),
+            ) as answer_question,
             patch(
                 "zeta_engine.eval.send_rag_answers",
                 return_value=(
@@ -115,11 +110,11 @@ class EvalTest(unittest.TestCase):
                 top_k=7,
             )
 
-        search_documents.assert_called_once_with(
+        answer_question.assert_called_once_with(
             "documents.db",
             "index.db",
             "问题",
-            7,
+            top_k=7,
             ranking="hybrid",
             dense_index=Path("data/dense"),
             reranker_model=Path("models/bge-reranker-base"),
@@ -127,7 +122,6 @@ class EvalTest(unittest.TestCase):
             reranker_batch_size=16,
             device=None,
             alpha=.5,
-            content_limit=3000,
         )
         self.assertEqual(send_rag_answers_mock.call_args.args[3], ["回答 问题"])
         self.assertIn("Judge 1: score=1.0, reason=正确", output.getvalue())

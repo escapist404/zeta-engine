@@ -11,52 +11,10 @@ from urllib.request import urlopen
 from zeta_engine.dense import DenseHit
 from zeta_engine.index import build_index
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize
-from zeta_engine.web import _query_snippet, create_server, search_documents
+from zeta_engine.web import create_server
 
 
 class WebTest(unittest.TestCase):
-    def test_query_snippet_focuses_on_matching_text(self) -> None:
-        snippet = _query_snippet(
-            "目标证据",
-            "无关开头" * 100 + "目标证据" + "无关结尾" * 100,
-        )
-
-        self.assertIn("目标证据", snippet)
-        self.assertLessEqual(len(snippet), 240)
-
-    def test_rag_content_prefers_complete_lexical_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            document_db = Path(directory) / "documents.db"
-            index_db = Path(directory) / "index.db"
-            text = (
-                "个人简介。教授课程：《人工智能综合设计》大一夏季学期。"
-                + "其他介绍。" * 100
-            )
-            with Storage(document_db=document_db) as storage:
-                assert storage.documents is not None
-                document_id = storage.documents.save(
-                    url="https://example.test/teacher",
-                    title="教师主页",
-                    text=text,
-                    fetched_at="2026-08-28T10:00:00",
-                )
-
-            with patch(
-                "zeta_engine.web.search_hybrid_with_snippets",
-                return_value=([document_id], {document_id: "无关论文成果"}),
-            ):
-                results = search_documents(
-                    document_db,
-                    index_db,
-                    "教授课程 夏季",
-                    ranking="hybrid",
-                    content_limit=3000,
-                )
-
-            self.assertIn("人工智能综合设计", results[0]["snippet"])
-            self.assertEqual(results[0]["content"], text_normalize(text))
-
     def test_serves_frontend_and_search_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document_db = Path(directory) / "documents.db"
@@ -105,7 +63,7 @@ class WebTest(unittest.TestCase):
                 self.assertIn("10月14日", payload["results"][0]["snippet"])
 
                 with patch(
-                    "zeta_engine.web.search_dense",
+                    "zeta_engine.service.search_dense",
                     return_value=[DenseHit(1, 0.9, "Ｄｅｎｓｅ 命中１０")],
                 ):
                     with urlopen(
@@ -118,7 +76,7 @@ class WebTest(unittest.TestCase):
                 )
 
                 with patch(
-                    "zeta_engine.web.search_hybrid_with_snippets",
+                    "zeta_engine.service.search_hybrid_with_snippets",
                     return_value=([1], {1: "Hybrid 命中１０"}),
                 ) as search_hybrid:
                     with urlopen(
@@ -134,7 +92,7 @@ class WebTest(unittest.TestCase):
                 self.assertEqual(search_hybrid.call_args.kwargs["limit"], 20)
 
                 with patch(
-                    "zeta_engine.web.search_reranked",
+                    "zeta_engine.service.search_reranked",
                     return_value=[1],
                 ) as search_reranked:
                     with urlopen(
@@ -157,35 +115,38 @@ class WebTest(unittest.TestCase):
                     "snippet": "RAG 相关片段",
                 }]
                 with patch(
-                    "zeta_engine.web.agentic_rag_answer",
+                    "zeta_engine.web.answer_question",
                     return_value={
                         "answer": "这是模型回答。[文档1]",
                         "results": rag_results,
+                        "trace": [{"cycle": 1, "action": "answer"}],
                     },
-                ) as rag_answer:
+                ) as answer_question:
                     with urlopen(
-                        f"{base_url}/api/search?q=test&ranking=rag"
+                        f"{base_url}/api/search?q=test&ranking=rag&debug=1"
                     ) as response:
                         rag_payload = json.load(response)
                 self.assertEqual(rag_payload["answer"], "这是模型回答。[文档1]")
                 self.assertEqual(rag_payload["results"], rag_results)
                 self.assertEqual(rag_payload["count"], 1)
-                self.assertEqual(rag_answer.call_args.args[0], "test")
-                self.assertEqual(rag_answer.call_args.kwargs["top_k"], 5)
-                rag_search_fn = rag_answer.call_args.args[1]
-                with patch(
-                    "zeta_engine.web.search_documents",
-                    return_value=[],
-                ) as search_documents:
-                    rag_search_fn("evidence", 3)
                 self.assertEqual(
-                    search_documents.call_args.kwargs["ranking"],
+                    rag_payload["trace"],
+                    [{"cycle": 1, "action": "answer"}],
+                )
+                self.assertEqual(
+                    answer_question.call_args.args,
+                    (document_db, index_db, "test"),
+                )
+                self.assertEqual(answer_question.call_args.kwargs["top_k"], 5)
+                self.assertEqual(
+                    answer_question.call_args.kwargs["ranking"],
                     "hybrid",
                 )
                 self.assertEqual(
-                    search_documents.call_args.kwargs["content_limit"],
-                    3000,
+                    answer_question.call_args.kwargs["max_cycles"],
+                    4,
                 )
+                self.assertTrue(answer_question.call_args.kwargs["debug"])
 
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base_url}/api/search?q=test&limit=nope")
@@ -193,6 +154,12 @@ class WebTest(unittest.TestCase):
 
                 with self.assertRaises(HTTPError) as error:
                     urlopen(f"{base_url}/api/search?q=test&ranking=unknown")
+                self.assertEqual(error.exception.code, 400)
+
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(
+                        f"{base_url}/api/search?q=test&ranking=rag&max_cycles=0"
+                    )
                 self.assertEqual(error.exception.code, 400)
 
                 with self.assertRaises(HTTPError) as error:

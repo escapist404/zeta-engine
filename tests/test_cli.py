@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import ANY, patch
 
 from zeta_engine.cli import build_parser
-from zeta_engine.dense import DenseHit
 from zeta_engine.eval import DEFAULT_BASE_URL
 from zeta_engine.storage import Storage
 
@@ -110,36 +109,36 @@ class CliTest(unittest.TestCase):
                 "--document-db", str(document_db),
                 "--dense-index", str(dense_index),
                 "--top-k", "3",
+                "--max-cycles", "6",
+                "--debug",
                 "--device", "mps",
             ])
             with (
                 patch(
-                    "zeta_engine.cli.agentic_rag_answer",
+                    "zeta_engine.cli.answer_question",
                     return_value={
                         "answer": "可以申请。[文档1]",
                         "results": [result],
+                        "trace": [{"cycle": 1, "action": "answer"}],
                     },
-                ) as rag_answer,
+                ) as answer_question,
                 redirect_stdout(output := io.StringIO()),
             ):
                 self.assertEqual(args.handler(args), 0)
 
             self.assertIn("可以申请。[文档1]", output.getvalue())
             self.assertIn("https://example.test/policy", output.getvalue())
-            self.assertEqual(rag_answer.call_args.args[0], "如何申请资助？")
-            self.assertEqual(rag_answer.call_args.kwargs["top_k"], 3)
-
-            search_fn = rag_answer.call_args.args[1]
-            with patch(
-                "zeta_engine.cli.search_documents",
-                return_value=[result],
-            ) as search_documents:
-                self.assertEqual(search_fn("查询", 2), [result])
-            search_documents.assert_called_once_with(
+            self.assertIn("Debug Trace", output.getvalue())
+            self.assertIn('"action": "answer"', output.getvalue())
+            self.assertEqual(
+                answer_question.call_args.args,
+                (document_db, Path("data/index.db"), "如何申请资助？"),
+            )
+            answer_question.assert_called_once_with(
                 document_db,
                 Path("data/index.db"),
-                "查询",
-                2,
+                "如何申请资助？",
+                top_k=3,
                 ranking="dense",
                 dense_index=dense_index,
                 reranker_model=Path("models/bge-reranker-base"),
@@ -147,7 +146,8 @@ class CliTest(unittest.TestCase):
                 reranker_batch_size=16,
                 device="mps",
                 alpha=.5,
-                content_limit=3000,
+                max_cycles=6,
+                debug=True,
             )
 
     def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:
@@ -206,16 +206,27 @@ class CliTest(unittest.TestCase):
                 "--device", "mps",
             ])
             with patch(
-                "zeta_engine.cli.search_dense",
-                return_value=[DenseHit(document_id, 0.9, "最佳分块１０")],
-            ) as search_dense, redirect_stdout(output := io.StringIO()):
+                "zeta_engine.cli.search_documents",
+                return_value=[{
+                    "title": "dense 结果",
+                    "url": "https://example.test/dense",
+                    "snippet": "最佳分块10",
+                }],
+            ) as search_documents, redirect_stdout(output := io.StringIO()):
                 self.assertEqual(search_args.handler(search_args), 0)
 
-            search_dense.assert_called_once_with(
+            search_documents.assert_called_once_with(
+                document_db,
+                Path("data/index.db"),
                 "语义查询",
-                dense_index,
-                limit=20,
+                20,
+                ranking="dense",
+                dense_index=dense_index,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
                 device="mps",
+                alpha=.5,
             )
             self.assertIn("dense 结果", output.getvalue())
             self.assertIn("最佳分块10", output.getvalue())
@@ -255,17 +266,22 @@ class CliTest(unittest.TestCase):
                 "--limit", "7",
             ])
             with patch(
-                "zeta_engine.cli.search_hybrid",
-                return_value=[document_id],
-            ) as search_hybrid, redirect_stdout(io.StringIO()):
+                "zeta_engine.cli.search_documents",
+                return_value=[],
+            ) as search_documents, redirect_stdout(io.StringIO()):
                 self.assertEqual(hybrid_args.handler(hybrid_args), 0)
-            search_hybrid.assert_called_once_with(
-                ANY,
+            search_documents.assert_called_once_with(
+                document_db,
+                index_db,
                 "混合查询",
-                dense_index,
-                limit=7,
-                alpha=.7,
+                7,
+                ranking="hybrid",
+                dense_index=dense_index,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
                 device="mps",
+                alpha=.7,
             )
 
             reranker_model = root / "reranker"
@@ -282,20 +298,22 @@ class CliTest(unittest.TestCase):
                 "--device", "mps",
             ])
             with patch(
-                "zeta_engine.cli.search_reranked",
-                return_value=[document_id],
-            ) as search_reranked, redirect_stdout(io.StringIO()):
+                "zeta_engine.cli.search_documents",
+                return_value=[],
+            ) as search_documents, redirect_stdout(io.StringIO()):
                 self.assertEqual(rerank_args.handler(rerank_args), 0)
-            search_reranked.assert_called_once_with(
-                ANY,
+            search_documents.assert_called_once_with(
+                document_db,
+                index_db,
                 "重排查询",
-                dense_index,
+                20,
+                ranking="rerank",
+                dense_index=dense_index,
                 reranker_model=reranker_model,
-                limit=20,
-                candidate_limit=40,
-                batch_size=8,
-                alpha=.5,
+                rerank_candidates=40,
+                reranker_batch_size=8,
                 device="mps",
+                alpha=.5,
             )
 
     def test_builds_search_index_and_reports_term_count(self) -> None:
@@ -350,6 +368,16 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(search_args.handler(search_args), 0)
             self.assertIn("https://info.ruc.edu.cn/example", output.getvalue())
 
+            phrase_args = parser.parse_args([
+                "search", "中国人民大学",
+                "--document-db", str(document_db),
+                "--index-db", str(index_db),
+                "--phrase",
+            ])
+            with redirect_stdout(output := io.StringIO()):
+                self.assertEqual(phrase_args.handler(phrase_args), 0)
+            self.assertIn("https://info.ruc.edu.cn/example", output.getvalue())
+
             bm25f_args = parser.parse_args([
                 "search", "中国人民大学",
                 "--document-db", str(document_db),
@@ -357,11 +385,14 @@ class CliTest(unittest.TestCase):
                 "--ranking", "bm25f",
             ])
             with patch(
-                "zeta_engine.cli.search_bm25f",
+                "zeta_engine.cli.search_documents",
                 return_value=[],
-            ) as search_bm25f:
+            ) as search_documents:
                 self.assertEqual(bm25f_args.handler(bm25f_args), 0)
-            search_bm25f.assert_called_once_with(ANY, "中国人民大学")
+            self.assertEqual(
+                search_documents.call_args.kwargs["ranking"],
+                "bm25f",
+            )
 
 
 if __name__ == "__main__":
