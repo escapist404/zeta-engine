@@ -2,7 +2,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
+from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
 from zeta_engine.rag import AGENT_MAX_CYCLES, agentic_rag_answer
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
@@ -179,6 +179,9 @@ def answer_question(
     max_cycles: int = AGENT_MAX_CYCLES,
     debug: bool = False,
 ) -> dict[str, object]:
+    if alpha > 0.:
+        warmup_dense(dense_index, device=device)
+
     def search_fn(search_query: str, limit: int) -> list[dict[str, str]]:
         return search_documents(
             document_db,

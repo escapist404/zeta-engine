@@ -408,3 +408,17 @@ def search_dense(
             break
 
     return hits
+
+
+def warmup_dense(
+    index_dir: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    device: str | None = None,
+) -> None:
+    """Load the Dense index and model before request processing starts."""
+
+    _vectors, records, metadata = _load_dense_index(
+        str(Path(index_dir).resolve())
+    )
+    if records:
+        _load_model(metadata["model_path"], device)

@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
+from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
 from zeta_engine.search import (
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -319,6 +319,10 @@ def run_rag_evaluation(
 ) -> None:
     idx = input_idx()
     passwd = input_passwd()
+    if alpha > 0.:
+        print("Loading BGE...", flush=True)
+        warmup_dense(dense_index, device=device)
+        print("BGE ready.", flush=True)
     queries = rag_login(base_url, idx, passwd)
 
     answers: list[str] = []

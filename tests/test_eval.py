@@ -80,14 +80,25 @@ class EvalTest(unittest.TestCase):
             "url": "https://example.test",
             "snippet": "材料",
         }]
+        calls = []
 
         def answer(document_db, index_db, query, **kwargs):
             return {"answer": f"回答 {query}", "results": result}
 
         with (
-            patch("zeta_engine.eval.input_idx", return_value="student"),
+            patch(
+                "zeta_engine.eval.warmup_dense",
+                side_effect=lambda *_args, **_kwargs: calls.append("bge"),
+            ) as warmup,
+            patch(
+                "zeta_engine.eval.input_idx",
+                side_effect=lambda: calls.append("idx") or "student",
+            ),
             patch("zeta_engine.eval.input_passwd", return_value=""),
-            patch("zeta_engine.eval.rag_login", return_value=["问题"]),
+            patch(
+                "zeta_engine.eval.rag_login",
+                side_effect=lambda *_args: calls.append("login") or ["问题"],
+            ),
             patch(
                 "zeta_engine.eval.answer_question",
                 side_effect=answer,
@@ -119,6 +130,8 @@ class EvalTest(unittest.TestCase):
             device=None,
             alpha=.5,
         )
+        warmup.assert_called_once_with(Path("data/dense"), device=None)
+        self.assertEqual(calls, ["idx", "bge", "login"])
         self.assertEqual(send_rag_answers_mock.call_args.args[3], ["回答 问题"])
         self.assertIn("Judge 1: score=1.0, reason=正确", output.getvalue())
 

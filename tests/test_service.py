@@ -89,6 +89,7 @@ class ServiceTest(unittest.TestCase):
                 "zeta_engine.service.agentic_rag_answer",
                 side_effect=answer,
             ),
+            patch("zeta_engine.service.warmup_dense") as warmup,
         ):
             response = answer_question(
                 "documents.db",
@@ -99,8 +100,28 @@ class ServiceTest(unittest.TestCase):
             )
 
         self.assertEqual(response["answer"], "问题")
+        warmup.assert_called_once_with(Path("data/dense"), device=None)
         self.assertEqual(search.call_args.kwargs["ranking"], "hybrid")
         self.assertEqual(search.call_args.kwargs["content_limit"], 3000)
+
+    def test_answer_question_warms_dense_before_agent(self) -> None:
+        calls = []
+
+        with (
+            patch(
+                "zeta_engine.service.warmup_dense",
+                side_effect=lambda *_args, **_kwargs: calls.append("bge"),
+            ),
+            patch(
+                "zeta_engine.service.agentic_rag_answer",
+                side_effect=lambda *_args, **_kwargs: (
+                    calls.append("agent") or {"answer": "完成"}
+                ),
+            ),
+        ):
+            answer_question("documents.db", "index.db", "复合问题")
+
+        self.assertEqual(calls, ["bge", "agent"])
 
 
 if __name__ == "__main__":
