@@ -12,6 +12,7 @@ wheels/
 # Data
 data/
 logs/
+outputs/
 
 # Local embedding models
 models/
