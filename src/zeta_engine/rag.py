@@ -23,6 +23,7 @@ AGENT_MAX_QUERIES = 3
 AGENT_MAX_RESULTS = 20
 AGENT_MAX_CHUNKS_PER_URL = 3
 AGENT_MAX_LLM_CALLS = 12
+MAX_REQUIREMENTS = 6
 ROSTER_COUNTING_RULE = (
     "完整名单中的每个人名、编号或项目名都是一个可计数项；"
     "将每项作为一个值逐项计数，重复项用去重计数，不同年份或群体分别计算；"
@@ -30,6 +31,11 @@ ROSTER_COUNTING_RULE = (
     "拟推荐、候选、入围、参营、录取、获奖等不同阶段不得互换，"
     "例如拟推荐名单不能作为参营人数的证据；"
     "不要仅因材料没有显式写出总数而继续搜索。"
+)
+TEMPORAL_SCOPE_RULE = (
+    "只有查询当前状态、现任关系或单个属性时，多个历史记录才优先采用最新值；"
+    "对于“多少次”“几次”“次数”“累计”等事件集合或聚合问题，"
+    "必须保留并计算范围内所有独立记录，不得只取最新记录。"
 )
 
 
@@ -285,7 +291,7 @@ def build_prompt(
 {ROSTER_COUNTING_RULE}
 局部信息、示例、下界或上界不能当作完整集合；存在冲突时必须先按问题限定的时间和范围消解。
 不得用原问题没有给出的系列、类别或时间范围排除证据。
-若问题以无时间限定的单数形式询问某个关系，而材料给出多个带日期的历史记录，按发布日期最新的匹配记录解释；只有记录无日期或同一时间仍冲突时才保留冲突。
+{TEMPORAL_SCOPE_RULE}
 材料不足时只输出“材料不足”，不要猜测。
 {feedback}
 
@@ -322,7 +328,7 @@ answer 中每项关键事实必须拆成 claim，并引用来源清单中的稳�
 相互冲突的值已按问题限定的时间和范围消解；派生结论的输入、运算和边界一致。
 排序题必须返回问题要求的对象，而不是只返回用于排序的编号、日期或数值。
 搜索词不得引入原问题没有给出的系列、类别或时间范围。
-无时间限定的单数关系出现多个带日期的历史记录时，按发布日期最新的匹配记录解释；无日期或同一时间的冲突不能强行合并。
+{TEMPORAL_SCOPE_RULE}
 材料缺失才 search；材料已有完整输入而只缺派生结果时必须 calculate，不要重复搜索显式答案。"""
     searched = "\n".join(f"- {item}" for item in searched_queries)
     feedback = verification_feedback or "（无）"
@@ -387,7 +393,7 @@ def build_verifier_prompt(query: str, context: str, answer: str) -> str:
 7. valid 为 false 时，queries 应给出最多 {AGENT_MAX_QUERIES} 个能修复证据缺口或冲突的检索词；如果无需新材料而只需纠正推理，可以为空。
 8. [计算N] 已由 harness 校验每个直接输入都存在于引用证据并确定性执行；不能仅因原文没有显式写出结果而否定计算。问题必须指出具体遗漏、重复、错误输入或错误操作，不能以“可能不完整”为由拒绝。
 8.1. {ROSTER_COUNTING_RULE}
-9. 冲突不能通过原问题没有给出的系列、类别或时间范围消解；resolved=true 时必须在 resolution 中写明依据。无时间限定的单数关系出现多个带日期的历史记录时，使用发布日期最新的匹配记录；记录无日期或同一时间仍冲突时保持未解决。
+9. 冲突不能通过原问题没有给出的系列、类别或时间范围消解；resolved=true 时必须在 resolution 中写明依据。{TEMPORAL_SCOPE_RULE}记录无日期或同一时间仍冲突时保持未解决。
 9.1. 每个 conflict 只能描述一个独立事实或对象的多个候选值，不得把多个对象合并到同一个 conflict 中。
 10. 必须逐项扫描来源清单，而不只检查候选答案引用的证据；如果清单中存在与关键断言相关的另一条记录，必须纳入 claims 或 conflicts。遗漏可见候选记录时 valid 必须为 false。
 11. 审计账本负责记录来源、旧值和消解过程；候选答案本身只需给出问题要求的最终结果。不能因为候选答案没有复述旧记录、来源或审计理由而标记 requirement 未满足或产生 issue。
@@ -403,6 +409,28 @@ def build_verifier_prompt(query: str, context: str, answer: str) -> str:
 </检索材料>"""
 
 
+def build_requirement_prompt(query: str) -> str:
+    """Build the small planning prompt used only for compound questions."""
+
+    return f"""把复合问题拆成可独立检索和验证的 requirement。
+只输出一个 JSON 对象，不要回答问题，不要输出 Markdown：
+{{
+  "requirements": [
+    {{"id": "r1", "question": "一个明确的答案槽位", "depends_on": []}},
+    {{"id": "r2", "question": "依赖前一结果的问题", "depends_on": ["r1"]}}
+  ]
+}}
+
+规则：
+1. 最多 {MAX_REQUIREMENTS} 项，并按依赖顺序排列。
+2. “分别”询问的对象应拆开；共同满足多个条件才能得到一个答案时不要拆开。
+3. “该教师、其中、前者”等指代形成 depends_on，不要猜测指代结果。
+4. 每项 question 必须保留原问题的时间、对象、范围和答案类型。
+5. 如果问题只有一个不可分割的答案槽位，只返回 r1。
+
+原始问题：{query}"""
+
+
 def _parse_json_object(response: str) -> dict[str, object]:
     response = response.strip()
     if response.startswith("```"):
@@ -416,6 +444,52 @@ def _parse_json_object(response: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("模型返回值必须是 JSON 对象")
     return payload
+
+
+def _parse_requirement_plan(
+    response: str,
+    query: str,
+) -> list[dict[str, object]]:
+    payload = _parse_json_object(response)
+    raw_requirements = payload.get("requirements")
+    if (
+        not isinstance(raw_requirements, list)
+        or not raw_requirements
+        or len(raw_requirements) > MAX_REQUIREMENTS
+    ):
+        raise ValueError("Requirement 计划数量无效")
+    requirements = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw_requirements, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("Requirement 必须是对象")
+        requirement_id = _clean(item.get("id")) or f"r{index}"
+        raw_question = item.get("question")
+        question = (
+            text_normalize(raw_question)
+            if isinstance(raw_question, str)
+            else ""
+        )
+        depends_on = item.get("depends_on", [])
+        if (
+            not question
+            or requirement_id in seen_ids
+            or not isinstance(depends_on, list)
+            or not all(
+                isinstance(dependency, str) and dependency in seen_ids
+                for dependency in depends_on
+            )
+        ):
+            raise ValueError("Requirement 内容或依赖无效")
+        seen_ids.add(requirement_id)
+        requirements.append({
+            "id": requirement_id,
+            "question": question,
+            "depends_on": list(dict.fromkeys(depends_on)),
+        })
+    if len(requirements) == 1:
+        requirements[0]["question"] = query
+    return requirements
 
 
 def _parse_agent_action(
@@ -625,6 +699,8 @@ def _format_calculations(calculations: list[dict[str, object]]) -> str:
 
 
 def _prefer_latest_record(query: str) -> bool:
+    if re.search(r"(?:多少|几).{0,6}次|次数|累计", query):
+        return False
     if any(marker in query for marker in (
         "最早", "首次", "起初", "之前", "以前", "历年", "历任", "曾经", "变化",
     )):
@@ -636,6 +712,14 @@ def _prefer_latest_record(query: str) -> bool:
 
 def _needs_sorted_object_format(query: str) -> bool:
     return any(marker in query for marker in ("顺序", "排序", "排列"))
+
+
+def _needs_requirement_decomposition(query: str) -> bool:
+    has_dependency = bool(re.search(
+        r"[，,；;].{0,20}(?:其|该|上述|前者|后者)",
+        query,
+    ))
+    return "分别" in query or has_dependency
 
 
 def _title_entity_keys(
@@ -912,7 +996,7 @@ def _parse_verification(
     return valid, "\n".join(feedback), queries, payload
 
 
-def agentic_rag_answer(
+def _answer_requirement(
     query: str,
     search_fn: Callable[[str, int], list[dict[str, str]]],
     top_k: int = 5,
@@ -922,7 +1006,7 @@ def agentic_rag_answer(
     include_citations: bool = False,
     debug: bool = False,
 ) -> dict[str, object]:
-    """Run a bounded controller over retrieval, evidence and model decisions."""
+    """Answer one independently verifiable requirement."""
 
     query = text_normalize(query)
     if not query:
@@ -973,6 +1057,18 @@ def agentic_rag_answer(
         claims: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         final_claims = public_claims(ledger, claims)
+        conflicts = ledger.get("conflicts", []) if isinstance(ledger, dict) else []
+        unresolved_conflict = any(
+            isinstance(conflict, dict) and conflict.get("resolved") is False
+            for conflict in conflicts
+        )
+        status = (
+            "conflicting"
+            if unresolved_conflict
+            else "missing"
+            if answer in {"材料不足", RAG_NO_RESULTS_ANSWER}
+            else "answered"
+        )
         cited_ids = list(dict.fromkeys(
             evidence_id
             for claim in final_claims
@@ -989,6 +1085,7 @@ def agentic_rag_answer(
             sources.append(source)
         response: dict[str, object] = {
             "answer": answer,
+            "status": status,
             "claims": final_claims,
             "sources": sources,
             # Backward-compatible complete retrieval pool.
@@ -1522,3 +1619,185 @@ def agentic_rag_answer(
         ]
 
     raise RuntimeError("Agentic RAG 未生成答案")
+
+
+def agentic_rag_answer(
+    query: str,
+    search_fn: Callable[[str, int], list[dict[str, str]]],
+    top_k: int = 5,
+    *,
+    max_cycles: int = AGENT_MAX_CYCLES,
+    max_llm_calls: int = AGENT_MAX_LLM_CALLS,
+    include_citations: bool = False,
+    debug: bool = False,
+) -> dict[str, object]:
+    """Plan compound requirements, answer each, and preserve partial results."""
+
+    query = text_normalize(query)
+    if not query:
+        raise ValueError("query 不能为空")
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+    if max_cycles <= 0:
+        raise ValueError("max_cycles 必须大于 0")
+    if max_llm_calls <= 0:
+        raise ValueError("max_llm_calls 必须大于 0")
+
+    def answer_one(question: str) -> dict[str, object]:
+        return _answer_requirement(
+            question,
+            search_fn,
+            top_k,
+            max_cycles=max_cycles,
+            max_llm_calls=max_llm_calls,
+            include_citations=include_citations,
+            debug=debug,
+        )
+
+    def attach_single_requirement(
+        response: dict[str, object],
+    ) -> dict[str, object]:
+        status = str(response.get("status", "answered"))
+        response["complete"] = status == "answered"
+        response["requirements"] = [{
+            "id": "r1",
+            "question": query,
+            "depends_on": [],
+            "status": status,
+            "answer": response.get("answer", ""),
+            "claims": response.get("claims", []),
+            "sources": response.get("sources", []),
+        }]
+        return response
+
+    if not _needs_requirement_decomposition(query):
+        return attach_single_requirement(answer_one(query))
+
+    try:
+        plan = _parse_requirement_plan(
+            call_model(build_requirement_prompt(query), json_output=True),
+            query,
+        )
+    except (ValueError, json.JSONDecodeError):
+        return attach_single_requirement(answer_one(query))
+    if len(plan) == 1:
+        return attach_single_requirement(answer_one(query))
+
+    requirement_results: list[dict[str, object]] = []
+    states: dict[str, dict[str, object]] = {}
+    all_claims: list[dict[str, object]] = []
+    all_sources: list[dict[str, object]] = []
+    all_results: list[dict[str, str]] = []
+    traces: list[dict[str, object]] = []
+    model_call_count = 1
+
+    for requirement in plan:
+        requirement_id = str(requirement["id"])
+        question = str(requirement["question"])
+        dependencies = list(requirement["depends_on"])
+        unavailable = [
+            dependency
+            for dependency in dependencies
+            if states[dependency]["status"] != "answered"
+        ]
+        if unavailable:
+            result = {
+                **requirement,
+                "status": "blocked",
+                "answer": "",
+                "reason": "前置 requirement 未完成",
+                "claims": [],
+                "sources": [],
+            }
+            requirement_results.append(result)
+            states[requirement_id] = result
+            continue
+
+        known = [
+            f"{dependency}: {states[dependency]['answer']}"
+            for dependency in dependencies
+        ]
+        task_query = question
+        if known:
+            task_query += (
+                "。已知前置结果：" + "；".join(known)
+                + "。只回答当前 requirement。"
+            )
+        try:
+            response = answer_one(task_query)
+        except RuntimeError as error:
+            result = {
+                **requirement,
+                "status": "error",
+                "answer": "",
+                "reason": str(error),
+                "claims": [],
+                "sources": [],
+            }
+        else:
+            status = str(response.get("status", "answered"))
+            result = {
+                **requirement,
+                "status": status,
+                "answer": response.get("answer", ""),
+                "claims": response.get("claims", []),
+                "sources": response.get("sources", []),
+            }
+            for claim in response.get("claims", []):
+                if isinstance(claim, dict):
+                    all_claims.append({**claim, "requirement_id": requirement_id})
+            all_sources.extend(response.get("sources", []))
+            all_results.extend(response.get("results", []))
+            if debug:
+                model_call_count += int(response.get("model_call_count", 0))
+                traces.append({
+                    "requirement_id": requirement_id,
+                    "status": status,
+                    "trace": response.get("trace", []),
+                })
+        requirement_results.append(result)
+        states[requirement_id] = result
+
+    answered = [
+        result for result in requirement_results
+        if result["status"] == "answered"
+    ]
+    incomplete = [
+        result for result in requirement_results
+        if result["status"] != "answered"
+    ]
+    if answered:
+        parts = list(dict.fromkeys(
+            str(result["answer"]).rstrip("。；;")
+            for result in answered
+            if result["answer"]
+        ))
+        if incomplete:
+            missing = "、".join(str(result["question"]) for result in incomplete)
+            parts.append(f"未能回答：{missing}（材料不足）")
+        answer = "；".join(parts) + "。"
+    else:
+        answer = "材料不足"
+
+    def unique_records(
+        records: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        unique = {}
+        for record in records:
+            key = str(record.get("evidence_id") or record.get("url") or record)
+            unique.setdefault(key, record)
+        return list(unique.values())
+
+    response: dict[str, object] = {
+        "answer": answer,
+        "status": "answered" if not incomplete else "partial" if answered else "missing",
+        "complete": not incomplete,
+        "requirements": requirement_results,
+        "claims": all_claims,
+        "sources": unique_records(all_sources),
+        "results": unique_records(all_results),
+    }
+    if debug:
+        response["model_call_count"] = model_call_count
+        response["trace"] = [{"requirement_plan": plan}, *traces]
+    return response

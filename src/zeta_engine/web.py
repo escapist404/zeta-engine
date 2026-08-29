@@ -103,6 +103,9 @@ def create_server(
                     response_payload = {
                         "query": query,
                         "answer": payload["answer"],
+                        "status": payload.get("status", "answered"),
+                        "complete": payload.get("complete", True),
+                        "requirements": payload.get("requirements", []),
                         "claims": payload.get("claims", []),
                         "sources": payload.get("sources", []),
                         "count": len(results),

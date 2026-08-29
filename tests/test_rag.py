@@ -186,6 +186,7 @@ class RagTest(unittest.TestCase):
             self.assertIn("每个人名、编号或项目名都是一个可计数项", counting_prompt)
             self.assertIn("不同年份或群体分别计算", counting_prompt)
             self.assertIn("拟推荐名单不能作为参营人数的证据", counting_prompt)
+            self.assertIn("必须保留并计算范围内所有独立记录", counting_prompt)
 
     def test_agentic_rag_answers_without_follow_up(self) -> None:
         results = [{
@@ -212,6 +213,26 @@ class RagTest(unittest.TestCase):
         self.assertEqual(model.call_count, 2)
         self.assertTrue(model.call_args_list[0].kwargs["json_output"])
         self.assertTrue(model.call_args_list[1].kwargs["json_output"])
+
+    def test_shared_answer_across_years_skips_requirement_planning(self) -> None:
+        results = [{
+            "url": "https://example.test/course",
+            "content": "2022、2023、2024年春季均开设机器学习基础。",
+        }]
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"机器学习基础"}',
+                verification(),
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                "2022、2023和2024年春季都开设哪门课程？",
+                lambda _query, _top_k: results,
+            )
+
+        self.assertEqual(response["answer"], "机器学习基础")
+        self.assertEqual(model.call_count, 2)
 
     def test_agentic_rag_searches_again_and_keeps_same_url_chunks(self) -> None:
         searches: list[str] = []
@@ -701,6 +722,55 @@ class RagTest(unittest.TestCase):
         self.assertEqual(response["trace"][0]["superseded_evidence_ids"], [old_id])
         self.assertEqual(len(response["results"]), 3)
 
+    def test_event_count_keeps_all_dated_records(self) -> None:
+        results = [
+            {
+                "title": "快手公司参访纪实",
+                "url": "https://example.test/kuaishou-old",
+                "published_at": "2023-04-13",
+                "content": "学院组织学生参访快手公司。",
+            },
+            {
+                "title": "快手公司企业参访",
+                "url": "https://example.test/kuaishou-new",
+                "published_at": "2025-12-04",
+                "content": "学院再次组织学生参访快手公司。",
+            },
+            {
+                "title": "腾讯公司参访纪实",
+                "url": "https://example.test/tencent-old",
+                "published_at": "2025-12-19",
+                "content": "学院组织学生参访腾讯公司。",
+            },
+            {
+                "title": "腾讯公司企业参访",
+                "url": "https://example.test/tencent-new",
+                "published_at": "2026-05-16",
+                "content": "学院再次组织学生参访腾讯公司。",
+            },
+        ]
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"一共4次"}',
+                verification(),
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                "参访快手公司和腾讯公司一共多少次？",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        initial_prompt = model.call_args_list[0].args[0]
+        self.assertIn("2023-04-13", initial_prompt)
+        self.assertIn("2025-12-04", initial_prompt)
+        self.assertIn("2025-12-19", initial_prompt)
+        self.assertIn("2026-05-16", initial_prompt)
+        self.assertEqual(response["answer"], "一共4次")
+        self.assertEqual(response["trace"][0]["superseded_evidence_ids"], [])
+
     def test_sorts_title_facts_without_an_llm_call(self) -> None:
         results = [
             {
@@ -858,6 +928,126 @@ class RagTest(unittest.TestCase):
         self.assertEqual(model.call_count, 5)
         revision = response["trace"][0]["temporal_revision"]
         self.assertTrue(revision["format_revision"]["accepted_as_grounded"])
+
+    def test_compound_query_preserves_answered_requirements(self) -> None:
+        plan = json.dumps({
+            "requirements": [
+                {"id": "r1", "question": "2019年人数", "depends_on": []},
+                {"id": "r2", "question": "2020年人数", "depends_on": []},
+                {"id": "r3", "question": "2021年人数", "depends_on": []},
+            ],
+        }, ensure_ascii=False)
+
+        def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
+            if "2019" in query:
+                return [{
+                    "url": "https://example.test/2019",
+                    "content": "2019年人数为59人",
+                }]
+            if "2020" in query:
+                return [{
+                    "url": "https://example.test/2020",
+                    "content": "2020年人数为65人",
+                }]
+            return []
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                plan,
+                '{"action":"answer","answer":"2019年59人"}',
+                verification(),
+                '{"action":"answer","answer":"2020年65人"}',
+                verification(),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "2019、2020和2021年人数分别是多少？",
+                search_fn,
+                max_cycles=1,
+                debug=True,
+            )
+
+        self.assertEqual(response["status"], "partial")
+        self.assertFalse(response["complete"])
+        self.assertIn("2019年59人", response["answer"])
+        self.assertIn("2020年65人", response["answer"])
+        self.assertIn("2021年人数", response["answer"])
+        self.assertEqual(
+            [item["status"] for item in response["requirements"]],
+            ["answered", "answered", "missing"],
+        )
+        self.assertEqual(response["model_call_count"], 5)
+
+    def test_requirement_dependency_receives_upstream_answer(self) -> None:
+        plan = json.dumps({
+            "requirements": [
+                {
+                    "id": "r1",
+                    "question": "2024年度入选教师是谁",
+                    "depends_on": [],
+                },
+                {
+                    "id": "r2",
+                    "question": "该教师教授哪些本科生课程",
+                    "depends_on": ["r1"],
+                },
+            ],
+        }, ensure_ascii=False)
+        searches: list[str] = []
+
+        def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
+            searches.append(query)
+            if "已知前置结果" in query:
+                return [{
+                    "url": "https://example.test/teacher",
+                    "content": "林老师教授《知识表示》",
+                }]
+            return [{
+                "title": "2024年度入选报道",
+                "url": "https://example.test/report",
+                "content": "入选教师为林老师",
+            }]
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                plan,
+                '{"action":"answer","answer":"林老师"}',
+                verification(),
+                '{"action":"answer","answer":"《知识表示》"}',
+                verification(),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "2024年度入选教师是谁，在其个人主页中有哪些本科生课程？",
+                search_fn,
+                max_cycles=1,
+            )
+
+        self.assertTrue(response["complete"])
+        self.assertEqual(response["status"], "answered")
+        self.assertIn("林老师", searches[1])
+        self.assertIn("《知识表示》", response["answer"])
+        self.assertEqual(response["requirements"][1]["depends_on"], ["r1"])
+
+    def test_compound_query_returns_material_shortage_only_when_all_missing(self) -> None:
+        plan = json.dumps({
+            "requirements": [
+                {"id": "r1", "question": "甲的答案", "depends_on": []},
+                {"id": "r2", "question": "乙的答案", "depends_on": []},
+            ],
+        }, ensure_ascii=False)
+        with patch("zeta_engine.rag.call_model", return_value=plan):
+            response = agentic_rag_answer(
+                "甲和乙分别是什么？",
+                lambda _query, _top_k: [],
+                max_cycles=1,
+            )
+
+        self.assertEqual(response["answer"], "材料不足")
+        self.assertEqual(response["status"], "missing")
+        self.assertFalse(response["complete"])
 
 
 if __name__ == "__main__":
