@@ -1,0 +1,82 @@
+[
+  {
+    "id": "physics_xu_rui_profile",
+    "query": "中国人民大学物理学院许瑞高级工程师的办公地点在哪里？他的两个主要研究兴趣是什么？",
+    "reference_answer": "办公地点为物理楼104A；研究兴趣是二维材料的表界面研究和先进原子力显微学研究。",
+    "evidence_urls": [
+      "http://www.phys.ruc.edu.cn/info/1028/2328.htm"
+    ]
+  },
+  {
+    "id": "statistics_doctoral_forum_2026",
+    "query": "在2026年全国工业统计学教学研究会青年统计学家协会年会上，中国人民大学共有多少名博士生入选博士生论坛并获得travel award？其中多少人来自统计与大数据研究院？",
+    "reference_answer": "中国人民大学共有7名博士生入选并获得travel award，其中5人来自统计与大数据研究院。",
+    "evidence_urls": [
+      "http://isbd.ruc.edu.cn/xwgg/8b0d61ea42f54635887c1ce47d39cf0c.htm"
+    ]
+  },
+  {
+    "id": "cultural_psychology_committee",
+    "query": "中国心理学会文化心理学专业委员会的设立申请获批后进入了什么阶段？该委员会挂靠在哪里，由谁提供人员和经费支持？",
+    "reference_answer": "申请获批后进入正式筹建阶段；委员会挂靠在中国人民大学心理学系，由该系提供人员和经费支持。",
+    "evidence_urls": [
+      "http://psy.ruc.edu.cn/xwdt/xwzx/81d1cbe2349140f7955852701811ce9e.htm"
+    ]
+  },
+  {
+    "id": "lingnan_psychology_agreement",
+    "query": "中国人民大学心理学系与香港岭南大学应用心理学系签订的合作协议计划持续多少年？双方计划重点加强哪些方面的合作？",
+    "reference_answer": "合作计划持续五年，重点加强学术合作、学生交换和教师互访。",
+    "evidence_urls": [
+      "http://psy.ruc.edu.cn/xwdt/xwzx/de993181adcd414d90a359a8b30b5874.htm"
+    ]
+  },
+  {
+    "id": "horticultural_expo_volunteer",
+    "query": "环境学院学生赵辰翀在2019年北京世界园艺博览会被分配到哪个园区服务？他的主要岗位任务是什么？",
+    "reference_answer": "他被分配到法国园服务，主要负责盖章，并曾临时协助翻译。",
+    "evidence_urls": [
+      "https://envi.ruc.edu.cn/dtjs/txgz/bcb8ad06881f4da3b7419a0acf0a9402.htm"
+    ]
+  },
+  {
+    "id": "database_virtual_teaching_room",
+    "query": "中国人民大学首批国家级虚拟教研室建设试点中的数据库课程虚拟教研室由谁牵头？它联合了多少所高校的资源？",
+    "reference_answer": "该虚拟教研室由杜小勇教授牵头，联合了全国11所高校的资源。",
+    "evidence_urls": [
+      "http://info.ruc.edu.cn/xwgg/xyxw/d9b602e8d057437bb63745d2a7d66ed2.htm"
+    ]
+  },
+  {
+    "id": "ccf_ant_fund_2022",
+    "query": "2022年度“CCF-蚂蚁科研基金”资助了高瓴人工智能学院哪两位教师的项目？请分别给出教师姓名和项目名称。",
+    "reference_answer": "陈旭的项目是《大规模算力分配能耗ROI预估与全链路实时弹性算力分配》；黄文炳的项目是《面向超大规模关系数据的高效图神经网络》。",
+    "evidence_urls": [
+      "http://ai.ruc.edu.cn/newslist/newsdetail/20221223002.html"
+    ]
+  },
+  {
+    "id": "student_innovation_projects_2018",
+    "query": "2018年度中国人民大学在校学生科技创新创业科研项目评审中，信息学院有多少个项目入选，占全校入选项目的比例是多少？",
+    "reference_answer": "信息学院有5个项目入选，占全校入选项目的50%。",
+    "evidence_urls": [
+      "http://info.ruc.edu.cn/xwgg/xyxw/66fdf9ecb4564f1cb21a6fd0a42828b0.htm"
+    ]
+  },
+  {
+    "id": "asia_pacific_web_conference",
+    "query": "第十三届亚太地区WEB技术会议收到多少篇投稿？最终录取长文和短文各多少篇，长文录取率是多少？",
+    "reference_answer": "会议收到103篇投稿，最终录取长文26篇、短文10篇，长文录取率为25%。",
+    "evidence_urls": [
+      "http://info.ruc.edu.cn/xwgg/xyxw/bc2a439040e64c97b3c8aa9cb179e167.htm"
+    ]
+  },
+  {
+    "id": "macquarie_guoxue_visit",
+    "query": "澳大利亚麦考瑞大学代表团在2013年10月访问中国人民大学国学院时共有多少人？双方主要洽谈了哪些合作事项？",
+    "reference_answer": "代表团一行4人，双方主要洽谈学术合作和学生交换等事项。",
+    "evidence_urls": [
+      "http://guoxue.ruc.edu.cn/xsjl/gj/ba30cb672b944193ae4c531901208268.htm"
+    ]
+  }
+]
