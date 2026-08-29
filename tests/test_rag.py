@@ -14,6 +14,7 @@ from zeta_engine.rag import (
     LLM_TIMEOUT_SECONDS,
     RAG_MAX_CONTEXT_CHARS,
     RAG_NO_RESULTS_ANSWER,
+    _run_calculations,
     agentic_rag_answer,
     build_agent_prompt,
     build_prompt,
@@ -63,6 +64,37 @@ def verification(
 
 
 class RagTest(unittest.TestCase):
+    def test_executes_grounded_set_operations_and_counts_results(self) -> None:
+        evidence = [Evidence.from_result({
+            "url": "https://example.test/lists",
+            "content": "甲 乙 丙 丁",
+        })]
+        evidence_id = evidence[0].evidence_id
+        set_a = {"values": ["甲", "乙", "丙"], "evidence_ids": [evidence_id]}
+        set_b = {"values": ["乙", "丙", "丁"], "evidence_ids": [evidence_id]}
+
+        calculations = _run_calculations(
+            [
+                {"name": "交集", "operator": "intersection", "sets": [set_a, set_b]},
+                {"name": "并集", "operator": "union", "sets": [set_a, set_b]},
+                {"name": "补集", "operator": "complement", "sets": [set_a, set_b]},
+                {
+                    "name": "交集人数",
+                    "operator": "count",
+                    "values": [{"calculation": "交集"}],
+                    "evidence_ids": [evidence_id],
+                },
+            ],
+            evidence,
+            [],
+        )
+
+        self.assertEqual(calculations[0]["result"], ["乙", "丙"])
+        self.assertEqual(calculations[1]["result"], ["甲", "乙", "丙", "丁"])
+        self.assertEqual(calculations[2]["result"], ["甲"])
+        self.assertEqual(calculations[3]["result"], 2)
+        self.assertEqual(calculations[3]["evidence_ids"], [evidence_id])
+
     def test_calls_model_and_returns_text_answer(self) -> None:
         response = SimpleNamespace(choices=[SimpleNamespace(
             message=SimpleNamespace(content="  模型答案  ")
@@ -150,6 +182,20 @@ class RagTest(unittest.TestCase):
         self.assertNotIn("重复正文", context)
         self.assertEqual(merge_results(results, max_chars=10), "")
 
+    def test_prefers_minimal_html_for_model_context(self) -> None:
+        context = merge_results([{
+            "url": "https://example.test/rules",
+            "content": "申诉处理 十日内提交",
+            "structured_content": (
+                "<main><h2>申诉处理</h2><p>十日内提交</p></main>"
+            ),
+        }])
+
+        self.assertIn(
+            "<main><h2>申诉处理</h2><p>十日内提交</p></main>",
+            context,
+        )
+
     def test_builds_grounded_prompt(self) -> None:
         prompt = build_prompt("申请条件是什么？", "[文档1]\n内容：申请条件")
 
@@ -187,6 +233,9 @@ class RagTest(unittest.TestCase):
             self.assertIn("不同年份或群体分别计算", counting_prompt)
             self.assertIn("拟推荐名单不能作为参营人数的证据", counting_prompt)
             self.assertIn("必须保留并计算范围内所有独立记录", counting_prompt)
+        self.assertIn("intersection|union|difference|complement", agent_prompt)
+        self.assertIn("不得用 count_unique 代替集合运算", agent_prompt)
+        self.assertIn("count_unique 只能计数或去重", verifier_prompt)
 
     def test_agentic_rag_answers_without_follow_up(self) -> None:
         results = [{
@@ -233,6 +282,142 @@ class RagTest(unittest.TestCase):
 
         self.assertEqual(response["answer"], "机器学习基础")
         self.assertEqual(model.call_count, 2)
+
+    def test_compound_derivation_stays_in_one_closed_loop(self) -> None:
+        query = (
+            "不满60人使用小型教室，60至100人使用中型教室，"
+            "101至200人使用大型教室，超过200人使用特大型教室。"
+            "2019、2020和2021年夏令营分别应使用哪类教室？"
+        )
+        results = [
+            {"url": "https://example.test/2019", "content": "2019年59人"},
+            {"url": "https://example.test/2020", "content": "2020年65人"},
+            {"url": "https://example.test/2021", "content": "2021年257人"},
+        ]
+        evidence_ids = [Evidence.from_result(item).evidence_id for item in results]
+        ledger = json.dumps({
+            "valid": True,
+            "requirements": [
+                {
+                    "description": f"回答{year}年教室类型",
+                    "satisfied": True,
+                    "evidence_ids": [evidence_id],
+                }
+                for year, evidence_id in zip(
+                    (2019, 2020, 2021), evidence_ids, strict=True
+                )
+            ],
+            "claims": [
+                {
+                    "statement": statement,
+                    "status": "supported",
+                    "evidence_ids": [evidence_id],
+                    "calculation_ids": [],
+                }
+                for statement, evidence_id in zip(
+                    (
+                        "2019年使用小型教室",
+                        "2020年使用中型教室",
+                        "2021年使用特大型教室",
+                    ),
+                    evidence_ids,
+                    strict=True,
+                )
+            ],
+            "conflicts": [],
+            "issues": [],
+            "queries": [],
+        }, ensure_ascii=False)
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                json.dumps({
+                    "action": "answer",
+                    "answer": (
+                        "2019年使用小型教室，2020年使用中型教室，"
+                        "2021年使用特大型教室。"
+                    ),
+                    "claims": [],
+                }, ensure_ascii=False),
+                ledger,
+            ],
+        ) as model:
+            response = agentic_rag_answer(
+                query,
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        self.assertTrue(response["complete"])
+        self.assertEqual(
+            [item["status"] for item in response["requirements"]],
+            ["answered", "answered", "answered"],
+        )
+        self.assertEqual(model.call_count, 2)
+        for call in model.call_args_list:
+            self.assertIn("超过200人使用特大型教室", call.args[0])
+        self.assertNotIn("requirement_plan", response["trace"][0])
+
+    def test_multi_slot_verdict_cannot_return_only_an_intermediate_fact(self) -> None:
+        results = [
+            {
+                "url": "https://example.test/report",
+                "content": "入选教师是林老师",
+            },
+            {
+                "url": "https://example.test/profile",
+                "content": "林老师的本科生课程是《知识表示》",
+            },
+        ]
+        evidence_ids = [Evidence.from_result(item).evidence_id for item in results]
+        ledger = json.dumps({
+            "valid": True,
+            "requirements": [
+                {
+                    "description": "确定入选教师",
+                    "satisfied": True,
+                    "evidence_ids": [evidence_ids[0]],
+                },
+                {
+                    "description": "列出该教师的本科生课程",
+                    "satisfied": True,
+                    "evidence_ids": [evidence_ids[1]],
+                },
+            ],
+            "claims": [
+                {
+                    "statement": "入选教师是林老师",
+                    "status": "supported",
+                    "evidence_ids": [evidence_ids[0]],
+                    "calculation_ids": [],
+                },
+                {
+                    "statement": "林老师的本科生课程是《知识表示》",
+                    "status": "supported",
+                    "evidence_ids": [evidence_ids[1]],
+                    "calculation_ids": [],
+                },
+            ],
+            "conflicts": [],
+            "issues": [],
+            "queries": [],
+        }, ensure_ascii=False)
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                '{"action":"answer","answer":"林老师"}',
+                ledger,
+            ],
+        ):
+            response = agentic_rag_answer(
+                "入选教师的本科生课程是什么？",
+                lambda _query, _top_k: results,
+            )
+
+        self.assertIn("林老师", response["answer"])
+        self.assertIn("《知识表示》", response["answer"])
 
     def test_agentic_rag_searches_again_and_keeps_same_url_chunks(self) -> None:
         searches: list[str] = []
@@ -510,6 +695,60 @@ class RagTest(unittest.TestCase):
         self.assertIn("[计算1]", model.call_args_list[1].args[0])
         self.assertIn("结果：3", model.call_args_list[1].args[0])
         self.assertEqual(response["trace"][0]["action"], "calculate")
+
+    def test_agentic_rag_counts_independent_evidence_records(self) -> None:
+        results = [
+            {
+                "title": "第一次参访",
+                "url": "https://example.test/visit-one",
+                "content": "学院开展企业参访。",
+            },
+            {
+                "title": "第二次参访",
+                "url": "https://example.test/visit-two",
+                "content": "学院再次开展企业参访。",
+            },
+        ]
+        evidence_ids = [
+            Evidence.from_result(result).evidence_id for result in results
+        ]
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                json.dumps({
+                    "action": "calculate",
+                    "calculations": [{
+                        "name": "参访次数",
+                        "operator": "count",
+                        "values": evidence_ids,
+                        "evidence_ids": evidence_ids,
+                    }],
+                }, ensure_ascii=False),
+                json.dumps({
+                    "action": "answer",
+                    "answer": "共2次",
+                    "claims": [{
+                        "statement": "共参访2次",
+                        "evidence_ids": [],
+                        "calculation_ids": ["计算1"],
+                    }],
+                }, ensure_ascii=False),
+                verification(
+                    calculation_ids=["参访次数"],
+                    evidence_ids=evidence_ids,
+                ),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "一共参访多少次？",
+                lambda _query, _top_k: results,
+                max_cycles=2,
+                debug=True,
+            )
+
+        calculation = response["trace"][0]["calculations"][0]
+        self.assertEqual(calculation["result"], 2)
+        self.assertEqual(response["answer"], "共2次")
 
     def test_calculation_keeps_stable_evidence_after_later_search(self) -> None:
         first = {
@@ -930,40 +1169,76 @@ class RagTest(unittest.TestCase):
         self.assertTrue(revision["format_revision"]["accepted_as_grounded"])
 
     def test_compound_query_preserves_answered_requirements(self) -> None:
-        plan = json.dumps({
+        results = [
+            {
+                "url": "https://example.test/2019",
+                "content": "2019年人数为59人",
+            },
+            {
+                "url": "https://example.test/2020",
+                "content": "2020年人数为65人",
+            },
+        ]
+        evidence_ids = [Evidence.from_result(item).evidence_id for item in results]
+        partial_ledger = json.dumps({
+            "valid": False,
             "requirements": [
-                {"id": "r1", "question": "2019年人数", "depends_on": []},
-                {"id": "r2", "question": "2020年人数", "depends_on": []},
-                {"id": "r3", "question": "2021年人数", "depends_on": []},
+                {
+                    "description": "回答2019年人数",
+                    "satisfied": True,
+                    "evidence_ids": [evidence_ids[0]],
+                },
+                {
+                    "description": "回答2020年人数",
+                    "satisfied": True,
+                    "evidence_ids": [evidence_ids[1]],
+                },
+                {
+                    "description": "回答2021年人数",
+                    "satisfied": False,
+                    "evidence_ids": [],
+                },
             ],
+            "claims": [
+                {
+                    "statement": "2019年59人",
+                    "status": "supported",
+                    "evidence_ids": [evidence_ids[0]],
+                    "calculation_ids": [],
+                },
+                {
+                    "statement": "2020年65人",
+                    "status": "supported",
+                    "evidence_ids": [evidence_ids[1]],
+                    "calculation_ids": [],
+                },
+                {
+                    "statement": "2021年人数未知",
+                    "status": "unsupported",
+                    "evidence_ids": [],
+                    "calculation_ids": [],
+                },
+            ],
+            "conflicts": [],
+            "issues": [{
+                "type": "incomplete",
+                "description": "缺少2021年人数",
+            }],
+            "queries": ["2021年人数"],
         }, ensure_ascii=False)
-
-        def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
-            if "2019" in query:
-                return [{
-                    "url": "https://example.test/2019",
-                    "content": "2019年人数为59人",
-                }]
-            if "2020" in query:
-                return [{
-                    "url": "https://example.test/2020",
-                    "content": "2020年人数为65人",
-                }]
-            return []
 
         with patch(
             "zeta_engine.rag.call_model",
             side_effect=[
-                plan,
-                '{"action":"answer","answer":"2019年59人"}',
-                verification(),
-                '{"action":"answer","answer":"2020年65人"}',
-                verification(),
+                '{"action":"answer","answer":"2019年59人；2020年65人"}',
+                partial_ledger,
+                '{"action":"answer","answer":"2019年59人；2020年65人"}',
+                partial_ledger,
             ],
-        ):
+        ) as model:
             response = agentic_rag_answer(
                 "2019、2020和2021年人数分别是多少？",
-                search_fn,
+                lambda _query, _top_k: results,
                 max_cycles=1,
                 debug=True,
             )
@@ -977,28 +1252,19 @@ class RagTest(unittest.TestCase):
             [item["status"] for item in response["requirements"]],
             ["answered", "answered", "missing"],
         )
-        self.assertEqual(response["model_call_count"], 5)
+        self.assertEqual(response["model_call_count"], 4)
+        self.assertNotIn("requirement_plan", response["trace"][0])
+        self.assertIn(
+            "2019、2020和2021年人数分别是多少",
+            model.call_args_list[0].args[0],
+        )
 
     def test_requirement_dependency_receives_upstream_answer(self) -> None:
-        plan = json.dumps({
-            "requirements": [
-                {
-                    "id": "r1",
-                    "question": "2024年度入选教师是谁",
-                    "depends_on": [],
-                },
-                {
-                    "id": "r2",
-                    "question": "该教师教授哪些本科生课程",
-                    "depends_on": ["r1"],
-                },
-            ],
-        }, ensure_ascii=False)
         searches: list[str] = []
 
         def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
             searches.append(query)
-            if "已知前置结果" in query:
+            if "林老师" in query:
                 return [{
                     "url": "https://example.test/teacher",
                     "content": "林老师教授《知识表示》",
@@ -1012,42 +1278,37 @@ class RagTest(unittest.TestCase):
         with patch(
             "zeta_engine.rag.call_model",
             side_effect=[
-                plan,
-                '{"action":"answer","answer":"林老师"}',
-                verification(),
+                '{"action":"search","queries":["林老师 本科生课程"]}',
                 '{"action":"answer","answer":"《知识表示》"}',
                 verification(),
             ],
-        ):
+        ) as model:
             response = agentic_rag_answer(
                 "2024年度入选教师是谁，在其个人主页中有哪些本科生课程？",
                 search_fn,
-                max_cycles=1,
+                max_cycles=2,
             )
 
         self.assertTrue(response["complete"])
         self.assertEqual(response["status"], "answered")
         self.assertIn("林老师", searches[1])
         self.assertIn("《知识表示》", response["answer"])
-        self.assertEqual(response["requirements"][1]["depends_on"], ["r1"])
+        self.assertEqual(model.call_count, 3)
+        for call in model.call_args_list:
+            self.assertIn("2024年度入选教师是谁", call.args[0])
 
     def test_compound_query_returns_material_shortage_only_when_all_missing(self) -> None:
-        plan = json.dumps({
-            "requirements": [
-                {"id": "r1", "question": "甲的答案", "depends_on": []},
-                {"id": "r2", "question": "乙的答案", "depends_on": []},
-            ],
-        }, ensure_ascii=False)
-        with patch("zeta_engine.rag.call_model", return_value=plan):
+        with patch("zeta_engine.rag.call_model") as model:
             response = agentic_rag_answer(
                 "甲和乙分别是什么？",
                 lambda _query, _top_k: [],
                 max_cycles=1,
             )
 
-        self.assertEqual(response["answer"], "材料不足")
+        self.assertEqual(response["answer"], RAG_NO_RESULTS_ANSWER)
         self.assertEqual(response["status"], "missing")
         self.assertFalse(response["complete"])
+        model.assert_not_called()
 
 
 if __name__ == "__main__":

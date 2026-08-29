@@ -15,15 +15,14 @@ LLM_MODEL = "deepseek-v4-flash"
 LLM_TIMEOUT_SECONDS = 55.0
 LLM_MAX_RETRIES = 0
 LLM_MAX_OUTPUT_TOKENS = 8192
-RAG_MAX_CONTEXT_CHARS = 24_000
-RAG_MAX_CONTEXT_TOKENS = 16_000
+RAG_MAX_CONTEXT_CHARS = 48_000
+RAG_MAX_CONTEXT_TOKENS = 32_000
 RAG_NO_RESULTS_ANSWER = "未检索到相关信息"
 AGENT_MAX_CYCLES = 3
 AGENT_MAX_QUERIES = 3
 AGENT_MAX_RESULTS = 20
 AGENT_MAX_CHUNKS_PER_URL = 3
 AGENT_MAX_LLM_CALLS = 12
-MAX_REQUIREMENTS = 6
 ROSTER_COUNTING_RULE = (
     "完整名单中的每个人名、编号或项目名都是一个可计数项；"
     "将每项作为一个值逐项计数，重复项用去重计数，不同年份或群体分别计算；"
@@ -87,9 +86,24 @@ def _normalize_text(value: object) -> str:
 
 
 def _result_text(result: dict[str, str]) -> str:
-    return _normalize_text(result.get("content")) or _normalize_text(
+    return _normalize_text(result.get("structured_content")) or _normalize_text(
+        result.get("content")
+    ) or _normalize_text(
         result.get("snippet")
     )
+
+
+def _grounding_text(evidence: "Evidence") -> str:
+    """Use tag-free content for deterministic input grounding when available."""
+
+    plain_text = _normalize_text(evidence.result.get("content")) or evidence.text
+    return " ".join(filter(None, (
+        evidence.evidence_id,
+        evidence.title,
+        evidence.url,
+        evidence.published_at,
+        plain_text,
+    )))
 
 
 def _estimate_tokens(text: str) -> int:
@@ -318,14 +332,23 @@ def build_agent_prompt(
 {{"action":"answer","answer":"最终答案","claims":[{{"statement":"关键断言","evidence_ids":["ev_..."],"calculation_ids":[]}}]}}
 如果缺少任何必要事实，返回：
 {{"action":"search","queries":["针对缺失事实的精确查询"]}}
-如果材料已包含计算所需的完整输入，但需要可靠地计数、去重、求和、取极值或排序，返回：
+如果材料已包含计算所需的完整输入，但需要可靠地计数、去重、求和、取极值、排序或执行集合运算，返回：
 {{"action":"calculate","calculations":[{{"name":"结果名","operator":"count|count_unique|sum|min|max|sort","values":["逐项抄录的输入值"],"evidence_ids":["ev_..."]}}]}}
+集合交、并、差、补使用：
+{{"action":"calculate","calculations":[{{"name":"集合结果","operator":"intersection|union|difference|complement","sets":[{{"values":["集合A的逐项值"],"evidence_ids":["ev_..."]}},{{"values":["集合B的逐项值"],"evidence_ids":["ev_..."]}}]}}]}}
+difference 和 complement 都表示第一个集合减去其余集合的并集；补集的第一个集合必须是问题给定的全集。
 同一批 calculations 可以按 name 引用前面的结果，例如 values 中使用 {{"calculation":"结果名"}}。
+需要重复使用一个原始集合时，先用 sort 将其保存为命名结果；后续在 sets 中使用 {{"calculation":"结果名"}} 引用，避免重复抄录。
+问题涉及交集、并集、差集或补集时必须返回 calculate，不得直接观察后作答，也不得用 count_unique 代替集合运算。
+事件记录计数时，values 可以逐项列出每条独立记录的唯一 evidence_id。
 {ROSTER_COUNTING_RULE}
 最多 {AGENT_MAX_QUERIES} 个查询。
 answer 中每项关键事实必须拆成 claim，并引用来源清单中的稳定证据ID；不得使用文档序号代替证据ID。
 回答前必须检查：问题中的每项要求都有直接证据；集合信息足以支持聚合；
 相互冲突的值已按问题限定的时间和范围消解；派生结论的输入、运算和边界一致。
+复合或嵌套问题中，先检查每个最终答案槽位；只搜索阻碍回答的最小缺失事实。
+检索步骤不是答案槽位，不要为中间步骤另起一套回答流程。
+原始问题明确给出的规则、阈值和假设是推理前提，不需要从材料中再次检索。
 排序题必须返回问题要求的对象，而不是只返回用于排序的编号、日期或数值。
 搜索词不得引入原问题没有给出的系列、类别或时间范围。
 {TEMPORAL_SCOPE_RULE}
@@ -384,21 +407,25 @@ def build_verifier_prompt(query: str, context: str, answer: str) -> str:
 }}
 
 审计规则：
-1. requirements 必须覆盖问题要求回答的全部事实和筛选条件。
+1. requirements 必须覆盖问题要求的全部最终答案槽位；检索和计算等中间步骤不是 requirement。
 2. claims 必须覆盖候选答案的全部关键断言，并只能引用直接支持它的文档或计算结果。
 3. 局部信息、示例、下界或上界不能证明完整集合或精确聚合结果。
 4. 同一事实出现多个值时，必须记录 conflict；只有依据问题限定的时间、范围或来源完成消解才能标记 resolved。
 5. 所有计算、排序、比较和分类都必须核对输入、运算及问题给出的边界。
+5.1. 原始问题明确给出的规则、阈值和假设属于可直接使用的推理前提，不要求材料再次证明；但从材料取得的输入值仍必须有证据。
 6. 仅当所有 requirement 均满足、所有 claim 均为 supported、所有 conflict 均 resolved 且 issues 为空时，valid 才能为 true。
 7. valid 为 false 时，queries 应给出最多 {AGENT_MAX_QUERIES} 个能修复证据缺口或冲突的检索词；如果无需新材料而只需纠正推理，可以为空。
 8. [计算N] 已由 harness 校验每个直接输入都存在于引用证据并确定性执行；不能仅因原文没有显式写出结果而否定计算。问题必须指出具体遗漏、重复、错误输入或错误操作，不能以“可能不完整”为由拒绝。
 8.1. {ROSTER_COUNTING_RULE}
+8.2. 交集、并集、差集和补集必须引用对应的确定性计算结果；count_unique 只能计数或去重，不能证明集合关系。
 9. 冲突不能通过原问题没有给出的系列、类别或时间范围消解；resolved=true 时必须在 resolution 中写明依据。{TEMPORAL_SCOPE_RULE}记录无日期或同一时间仍冲突时保持未解决。
 9.1. 每个 conflict 只能描述一个独立事实或对象的多个候选值，不得把多个对象合并到同一个 conflict 中。
 10. 必须逐项扫描来源清单，而不只检查候选答案引用的证据；如果清单中存在与关键断言相关的另一条记录，必须纳入 claims 或 conflicts。遗漏可见候选记录时 valid 必须为 false。
 11. 审计账本负责记录来源、旧值和消解过程；候选答案本身只需给出问题要求的最终结果。不能因为候选答案没有复述旧记录、来源或审计理由而标记 requirement 未满足或产生 issue。
 12. 候选答案中任何不用于满足 requirements 的人物、实体或事实都属于 irrelevant；即使内容本身正确，valid 也必须为 false。
 13. 必须检查答案的对象类型与问题要求一致；排序键只能证明次序，不能替代被排序对象。
+14. 候选答案只完成部分槽位时，保留已支持的 claims，未完成槽位标记 satisfied=false，并只为缺失槽位生成 queries。
+15. 只审计候选答案实际写出的断言，不得从检索材料中替候选答案补充遗漏事实；材料中存在但候选答案未写出的结果，必须判为 incomplete。
 
 问题：{query}
 
@@ -407,28 +434,6 @@ def build_verifier_prompt(query: str, context: str, answer: str) -> str:
 <检索材料>
 {context}
 </检索材料>"""
-
-
-def build_requirement_prompt(query: str) -> str:
-    """Build the small planning prompt used only for compound questions."""
-
-    return f"""把复合问题拆成可独立检索和验证的 requirement。
-只输出一个 JSON 对象，不要回答问题，不要输出 Markdown：
-{{
-  "requirements": [
-    {{"id": "r1", "question": "一个明确的答案槽位", "depends_on": []}},
-    {{"id": "r2", "question": "依赖前一结果的问题", "depends_on": ["r1"]}}
-  ]
-}}
-
-规则：
-1. 最多 {MAX_REQUIREMENTS} 项，并按依赖顺序排列。
-2. “分别”询问的对象应拆开；共同满足多个条件才能得到一个答案时不要拆开。
-3. “该教师、其中、前者”等指代形成 depends_on，不要猜测指代结果。
-4. 每项 question 必须保留原问题的时间、对象、范围和答案类型。
-5. 如果问题只有一个不可分割的答案槽位，只返回 r1。
-
-原始问题：{query}"""
 
 
 def _parse_json_object(response: str) -> dict[str, object]:
@@ -444,52 +449,6 @@ def _parse_json_object(response: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("模型返回值必须是 JSON 对象")
     return payload
-
-
-def _parse_requirement_plan(
-    response: str,
-    query: str,
-) -> list[dict[str, object]]:
-    payload = _parse_json_object(response)
-    raw_requirements = payload.get("requirements")
-    if (
-        not isinstance(raw_requirements, list)
-        or not raw_requirements
-        or len(raw_requirements) > MAX_REQUIREMENTS
-    ):
-        raise ValueError("Requirement 计划数量无效")
-    requirements = []
-    seen_ids: set[str] = set()
-    for index, item in enumerate(raw_requirements, start=1):
-        if not isinstance(item, dict):
-            raise ValueError("Requirement 必须是对象")
-        requirement_id = _clean(item.get("id")) or f"r{index}"
-        raw_question = item.get("question")
-        question = (
-            text_normalize(raw_question)
-            if isinstance(raw_question, str)
-            else ""
-        )
-        depends_on = item.get("depends_on", [])
-        if (
-            not question
-            or requirement_id in seen_ids
-            or not isinstance(depends_on, list)
-            or not all(
-                isinstance(dependency, str) and dependency in seen_ids
-                for dependency in depends_on
-            )
-        ):
-            raise ValueError("Requirement 内容或依赖无效")
-        seen_ids.add(requirement_id)
-        requirements.append({
-            "id": requirement_id,
-            "question": question,
-            "depends_on": list(dict.fromkeys(depends_on)),
-        })
-    if len(requirements) == 1:
-        requirements[0]["question"] = query
-    return requirements
 
 
 def _parse_agent_action(
@@ -561,9 +520,13 @@ def _run_calculations(
 ) -> list[dict[str, object]]:
     """Execute grounded, declarative calculations without arbitrary code."""
 
-    known = {
-        str(calculation["name"]): calculation["result"]
+    known_calculations = {
+        str(calculation["name"]): calculation
         for calculation in previous
+    }
+    known = {
+        name: calculation["result"]
+        for name, calculation in known_calculations.items()
     }
     evidence_by_id = {item.evidence_id: item for item in evidence}
     completed = []
@@ -572,8 +535,94 @@ def _run_calculations(
         operator = specification.get("operator")
         if not name or name in known:
             raise ValueError("计算名称为空或重复")
-        if operator not in {"count", "count_unique", "sum", "min", "max", "sort"}:
+        set_operators = {"intersection", "union", "difference", "complement"}
+        if operator not in {
+            "count", "count_unique", "sum", "min", "max", "sort",
+            *set_operators,
+        }:
             raise ValueError("不支持的计算操作")
+
+        if operator in set_operators:
+            raw_sets = specification.get("sets")
+            if not isinstance(raw_sets, list) or not 2 <= len(raw_sets) <= 50:
+                raise ValueError("集合运算需要 2 至 50 个集合")
+            sets: list[list[object]] = []
+            used_evidence_ids: list[str] = []
+            for raw_set in raw_sets:
+                if not isinstance(raw_set, dict):
+                    raise ValueError("集合必须是对象")
+                if "calculation" in raw_set:
+                    reference = _clean(raw_set.get("calculation"))
+                    if reference not in known or not isinstance(known[reference], list):
+                        raise ValueError("集合引用必须指向已有集合结果")
+                    sets.append(list(dict.fromkeys(known[reference])))
+                    used_evidence_ids.extend(
+                        known_calculations[reference].get("evidence_ids", [])
+                    )
+                    continue
+
+                raw_values = raw_set.get("values")
+                raw_ids = raw_set.get("evidence_ids")
+                if not isinstance(raw_values, list) or not 1 <= len(raw_values) <= 2000:
+                    raise ValueError("每个集合必须包含 1 至 2000 个值")
+                if not isinstance(raw_ids, list) or not raw_ids or not all(
+                    isinstance(evidence_id, str) and evidence_id in evidence_by_id
+                    for evidence_id in raw_ids
+                ):
+                    raise ValueError("每个集合必须引用有效证据ID")
+                source_text = " ".join(
+                    _grounding_text(evidence_by_id[evidence_id])
+                    for evidence_id in raw_ids
+                )
+                occurrences: dict[str, int] = {}
+                values = []
+                for raw_value in raw_values:
+                    if (
+                        isinstance(raw_value, bool)
+                        or not isinstance(raw_value, (str, int, float))
+                    ):
+                        raise ValueError("集合输入只支持文本或数字")
+                    value = (
+                        _normalize_text(raw_value)
+                        if isinstance(raw_value, str)
+                        else raw_value
+                    )
+                    if value == "":
+                        raise ValueError("集合输入不能为空")
+                    key = str(value)
+                    occurrences[key] = occurrences.get(key, 0) + 1
+                    if source_text.count(key) < occurrences[key]:
+                        raise ValueError(f"集合输入不受来源支持: {value}")
+                    values.append(value)
+                sets.append(list(dict.fromkeys(values)))
+                used_evidence_ids.extend(raw_ids)
+
+            if operator == "intersection":
+                other_sets = [set(values) for values in sets[1:]]
+                result = [
+                    value for value in sets[0]
+                    if all(value in values for values in other_sets)
+                ]
+            elif operator == "union":
+                result = list(dict.fromkeys(
+                    value for values in sets for value in values
+                ))
+            else:
+                excluded = set().union(*(set(values) for values in sets[1:]))
+                result = [value for value in sets[0] if value not in excluded]
+
+            calculation = {
+                "name": name,
+                "operator": operator,
+                "evidence_ids": list(dict.fromkeys(used_evidence_ids)),
+                "input_count": sum(len(values) for values in sets),
+                "result": result,
+            }
+            completed.append(calculation)
+            known[name] = result
+            known_calculations[name] = calculation
+            continue
+
         raw_items = specification.get("items")
         if raw_items is None:
             raw_values = specification.get("values")
@@ -617,7 +666,14 @@ def _run_calculations(
                 reference = _clean(raw_item.get("calculation"))
                 if not reference or reference not in known:
                     raise ValueError("计算引用了未知的先前结果")
-                values.append(known[reference])
+                referenced = known[reference]
+                if isinstance(referenced, list):
+                    values.extend(referenced)
+                else:
+                    values.append(referenced)
+                used_evidence_ids.extend(
+                    known_calculations[reference].get("evidence_ids", [])
+                )
                 continue
 
             raw_value = raw_item.get("value")
@@ -638,7 +694,8 @@ def _run_calculations(
             ):
                 raise ValueError("每个直接计算输入必须引用有效证据ID")
             source_text = " ".join(
-                evidence_by_id[evidence_id].text for evidence_id in raw_ids
+                _grounding_text(evidence_by_id[evidence_id])
+                for evidence_id in raw_ids
             )
             occurrence_key = ("\0".join(raw_ids), str(value))
             occurrences[occurrence_key] = occurrences.get(occurrence_key, 0) + 1
@@ -684,6 +741,7 @@ def _run_calculations(
         }
         completed.append(calculation)
         known[name] = result
+        known_calculations[name] = calculation
     return completed
 
 
@@ -714,12 +772,21 @@ def _needs_sorted_object_format(query: str) -> bool:
     return any(marker in query for marker in ("顺序", "排序", "排列"))
 
 
-def _needs_requirement_decomposition(query: str) -> bool:
-    has_dependency = bool(re.search(
-        r"[，,；;].{0,20}(?:其|该|上述|前者|后者)",
-        query,
-    ))
-    return "分别" in query or has_dependency
+def _valid_calculation_reference(
+    value: object,
+    names: set[str],
+    count: int,
+) -> bool:
+    if isinstance(value, str):
+        if value in names:
+            return True
+        match = re.fullmatch(r"\[?计算(\d+)\]?", _clean(value))
+        return bool(match and 1 <= int(match.group(1)) <= count)
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= count
+    )
 
 
 def _title_entity_keys(
@@ -877,14 +944,10 @@ def _parse_verification(
         referenced_evidence(claim)
         calculation_ids = claim.get("calculation_ids", [])
         if not isinstance(calculation_ids, list) or not all(
-            (
-                isinstance(calculation_id, str)
-                and calculation_id in calculation_names
-            )
-            or (
-                isinstance(calculation_id, int)
-                and not isinstance(calculation_id, bool)
-                and 1 <= calculation_id <= calculation_count
+            _valid_calculation_reference(
+                calculation_id,
+                calculation_names,
+                calculation_count,
             )
             for calculation_id in calculation_ids
         ):
@@ -996,7 +1059,7 @@ def _parse_verification(
     return valid, "\n".join(feedback), queries, payload
 
 
-def _answer_requirement(
+def _run_closed_loop(
     query: str,
     search_fn: Callable[[str, int], list[dict[str, str]]],
     top_k: int = 5,
@@ -1006,7 +1069,7 @@ def _answer_requirement(
     include_citations: bool = False,
     debug: bool = False,
 ) -> dict[str, object]:
-    """Answer one independently verifiable requirement."""
+    """Run one bounded Agent→Tools→Verifier loop over the full question."""
 
     query = text_normalize(query)
     if not query:
@@ -1057,16 +1120,36 @@ def _answer_requirement(
         claims: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         final_claims = public_claims(ledger, claims)
+        raw_requirements = (
+            ledger.get("requirements", [])
+            if isinstance(ledger, dict)
+            else []
+        )
+        raw_ledger_claims = (
+            ledger.get("claims", []) if isinstance(ledger, dict) else []
+        )
         conflicts = ledger.get("conflicts", []) if isinstance(ledger, dict) else []
         unresolved_conflict = any(
             isinstance(conflict, dict) and conflict.get("resolved") is False
             for conflict in conflicts
         )
+        ledger_incomplete = isinstance(ledger, dict) and (
+            any(
+                isinstance(item, dict) and item.get("satisfied") is not True
+                for item in raw_requirements
+            )
+            or any(
+                isinstance(item, dict) and item.get("status") != "supported"
+                for item in raw_ledger_claims
+            )
+        )
         status = (
             "conflicting"
             if unresolved_conflict
+            else "partial"
+            if ledger_incomplete and final_claims
             else "missing"
-            if answer in {"材料不足", RAG_NO_RESULTS_ANSWER}
+            if answer in {"材料不足", RAG_NO_RESULTS_ANSWER} or ledger_incomplete
             else "answered"
         )
         cited_ids = list(dict.fromkeys(
@@ -1083,9 +1166,30 @@ def _answer_requirement(
             source = dict(evidence.result)
             source["evidence_id"] = evidence_id
             sources.append(source)
+        requirements = [
+            {
+                "id": f"r{index}",
+                "question": _clean(item.get("description")) or query,
+                "depends_on": [],
+                "status": (
+                    "answered" if item.get("satisfied") is True else "missing"
+                ),
+                "evidence_ids": list(item.get("evidence_ids", [])),
+            }
+            for index, item in enumerate(raw_requirements, start=1)
+            if isinstance(item, dict)
+        ] or [{
+            "id": "r1",
+            "question": query,
+            "depends_on": [],
+            "status": status,
+            "evidence_ids": cited_ids,
+        }]
         response: dict[str, object] = {
             "answer": answer,
             "status": status,
+            "complete": status == "answered",
+            "requirements": requirements,
             "claims": final_claims,
             "sources": sources,
             # Backward-compatible complete retrieval pool.
@@ -1095,6 +1199,48 @@ def _answer_requirement(
             response["model_call_count"] = model_call_count
             response["trace"] = trace
         return response
+
+    def answer_from_supported_claims(
+        ledger: dict[str, object],
+    ) -> str:
+        """Keep verified slots when the whole answer cannot be completed."""
+
+        if any(
+            isinstance(item, dict) and item.get("resolved") is False
+            for item in ledger.get("conflicts", [])
+        ):
+            return ""
+        statements = list(dict.fromkeys(
+            _clean(item.get("statement"))
+            for item in ledger.get("claims", [])
+            if isinstance(item, dict)
+            and item.get("status") == "supported"
+            and _clean(item.get("statement"))
+        ))
+        if not statements:
+            return ""
+        missing = list(dict.fromkeys(
+            _clean(item.get("description"))
+            for item in ledger.get("requirements", [])
+            if isinstance(item, dict)
+            and item.get("satisfied") is False
+            and _clean(item.get("description"))
+        ))
+        parts = statements
+        if missing:
+            parts.append(f"未能回答：{'、'.join(missing)}（材料不足）")
+        return "；".join(part.rstrip("。；; ") for part in parts) + "。"
+
+    def complete_answer(
+        candidate: str,
+        ledger: dict[str, object],
+    ) -> str:
+        """Materialize every verified final slot in a multi-slot answer."""
+
+        requirements = ledger.get("requirements", [])
+        if not isinstance(requirements, list) or len(requirements) <= 1:
+            return candidate
+        return answer_from_supported_claims(ledger) or candidate
 
     def ledger_is_grounded(ledger: dict[str, object]) -> bool:
         """Accept a semantically grounded answer despite presentation-only issues."""
@@ -1176,11 +1322,10 @@ def _answer_requirement(
             if any(item not in visible_ids for item in evidence_ids):
                 return "claim 引用了当前上下文之外的证据"
             if any(
-                str(item) not in calculation_ids
-                and not (
-                    isinstance(item, int)
-                    and not isinstance(item, bool)
-                    and 1 <= item <= len(calculations)
+                not _valid_calculation_reference(
+                    item,
+                    calculation_ids,
+                    len(calculations),
                 )
                 for item in referenced_calculations
             ):
@@ -1482,7 +1627,7 @@ def _answer_requirement(
             })
         if valid:
             return finish(
-                proposed_answer,
+                complete_answer(proposed_answer, ledger),
                 ledger=ledger,
                 claims=proposed_claims,
             )
@@ -1605,10 +1750,14 @@ def _answer_requirement(
                 }
             if revision_valid:
                 return finish(
-                    revised_answer,
+                    complete_answer(revised_answer, revision_ledger),
                     ledger=revision_ledger,
                     claims=revised_claims,
                 )
+            for partial_ledger in (revision_ledger, ledger):
+                partial_answer = answer_from_supported_claims(partial_ledger)
+                if partial_answer:
+                    return finish(partial_answer, ledger=partial_ledger)
             return finish("材料不足")
 
         verification_feedback = feedback
@@ -1631,173 +1780,14 @@ def agentic_rag_answer(
     include_citations: bool = False,
     debug: bool = False,
 ) -> dict[str, object]:
-    """Plan compound requirements, answer each, and preserve partial results."""
+    """Answer a question with one bounded, evidence-preserving closed loop."""
 
-    query = text_normalize(query)
-    if not query:
-        raise ValueError("query 不能为空")
-    if top_k <= 0:
-        raise ValueError("top_k 必须大于 0")
-    if max_cycles <= 0:
-        raise ValueError("max_cycles 必须大于 0")
-    if max_llm_calls <= 0:
-        raise ValueError("max_llm_calls 必须大于 0")
-
-    def answer_one(question: str) -> dict[str, object]:
-        return _answer_requirement(
-            question,
-            search_fn,
-            top_k,
-            max_cycles=max_cycles,
-            max_llm_calls=max_llm_calls,
-            include_citations=include_citations,
-            debug=debug,
-        )
-
-    def attach_single_requirement(
-        response: dict[str, object],
-    ) -> dict[str, object]:
-        status = str(response.get("status", "answered"))
-        response["complete"] = status == "answered"
-        response["requirements"] = [{
-            "id": "r1",
-            "question": query,
-            "depends_on": [],
-            "status": status,
-            "answer": response.get("answer", ""),
-            "claims": response.get("claims", []),
-            "sources": response.get("sources", []),
-        }]
-        return response
-
-    if not _needs_requirement_decomposition(query):
-        return attach_single_requirement(answer_one(query))
-
-    try:
-        plan = _parse_requirement_plan(
-            call_model(build_requirement_prompt(query), json_output=True),
-            query,
-        )
-    except (ValueError, json.JSONDecodeError):
-        return attach_single_requirement(answer_one(query))
-    if len(plan) == 1:
-        return attach_single_requirement(answer_one(query))
-
-    requirement_results: list[dict[str, object]] = []
-    states: dict[str, dict[str, object]] = {}
-    all_claims: list[dict[str, object]] = []
-    all_sources: list[dict[str, object]] = []
-    all_results: list[dict[str, str]] = []
-    traces: list[dict[str, object]] = []
-    model_call_count = 1
-
-    for requirement in plan:
-        requirement_id = str(requirement["id"])
-        question = str(requirement["question"])
-        dependencies = list(requirement["depends_on"])
-        unavailable = [
-            dependency
-            for dependency in dependencies
-            if states[dependency]["status"] != "answered"
-        ]
-        if unavailable:
-            result = {
-                **requirement,
-                "status": "blocked",
-                "answer": "",
-                "reason": "前置 requirement 未完成",
-                "claims": [],
-                "sources": [],
-            }
-            requirement_results.append(result)
-            states[requirement_id] = result
-            continue
-
-        known = [
-            f"{dependency}: {states[dependency]['answer']}"
-            for dependency in dependencies
-        ]
-        task_query = question
-        if known:
-            task_query += (
-                "。已知前置结果：" + "；".join(known)
-                + "。只回答当前 requirement。"
-            )
-        try:
-            response = answer_one(task_query)
-        except RuntimeError as error:
-            result = {
-                **requirement,
-                "status": "error",
-                "answer": "",
-                "reason": str(error),
-                "claims": [],
-                "sources": [],
-            }
-        else:
-            status = str(response.get("status", "answered"))
-            result = {
-                **requirement,
-                "status": status,
-                "answer": response.get("answer", ""),
-                "claims": response.get("claims", []),
-                "sources": response.get("sources", []),
-            }
-            for claim in response.get("claims", []):
-                if isinstance(claim, dict):
-                    all_claims.append({**claim, "requirement_id": requirement_id})
-            all_sources.extend(response.get("sources", []))
-            all_results.extend(response.get("results", []))
-            if debug:
-                model_call_count += int(response.get("model_call_count", 0))
-                traces.append({
-                    "requirement_id": requirement_id,
-                    "status": status,
-                    "trace": response.get("trace", []),
-                })
-        requirement_results.append(result)
-        states[requirement_id] = result
-
-    answered = [
-        result for result in requirement_results
-        if result["status"] == "answered"
-    ]
-    incomplete = [
-        result for result in requirement_results
-        if result["status"] != "answered"
-    ]
-    if answered:
-        parts = list(dict.fromkeys(
-            str(result["answer"]).rstrip("。；;")
-            for result in answered
-            if result["answer"]
-        ))
-        if incomplete:
-            missing = "、".join(str(result["question"]) for result in incomplete)
-            parts.append(f"未能回答：{missing}（材料不足）")
-        answer = "；".join(parts) + "。"
-    else:
-        answer = "材料不足"
-
-    def unique_records(
-        records: list[dict[str, object]],
-    ) -> list[dict[str, object]]:
-        unique = {}
-        for record in records:
-            key = str(record.get("evidence_id") or record.get("url") or record)
-            unique.setdefault(key, record)
-        return list(unique.values())
-
-    response: dict[str, object] = {
-        "answer": answer,
-        "status": "answered" if not incomplete else "partial" if answered else "missing",
-        "complete": not incomplete,
-        "requirements": requirement_results,
-        "claims": all_claims,
-        "sources": unique_records(all_sources),
-        "results": unique_records(all_results),
-    }
-    if debug:
-        response["model_call_count"] = model_call_count
-        response["trace"] = [{"requirement_plan": plan}, *traces]
-    return response
+    return _run_closed_loop(
+        query,
+        search_fn,
+        top_k,
+        max_cycles=max_cycles,
+        max_llm_calls=max_llm_calls,
+        include_citations=include_citations,
+        debug=debug,
+    )

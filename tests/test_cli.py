@@ -5,7 +5,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import ANY, patch
 
-from zeta_engine.cli import build_parser
+from zeta_engine.cli import build_parser, format_rag_debug
 from zeta_engine.eval import DEFAULT_BASE_URL
 from zeta_engine.storage import Storage
 
@@ -145,8 +145,8 @@ class CliTest(unittest.TestCase):
 
             self.assertIn("可以申请。[文档1]", output.getvalue())
             self.assertIn("https://example.test/policy", output.getvalue())
-            self.assertIn("Debug Trace", output.getvalue())
-            self.assertIn('"action": "answer"', output.getvalue())
+            self.assertIn("调试信息", output.getvalue())
+            self.assertIn("第 1 轮 · answer", output.getvalue())
             self.assertEqual(
                 answer_question.call_args.args,
                 (document_db, index_db, "如何申请资助？"),
@@ -162,6 +162,46 @@ class CliTest(unittest.TestCase):
                 max_cycles=6,
                 debug=True,
             )
+
+    def test_formats_rag_debug_as_a_compact_summary(self) -> None:
+        report = format_rag_debug({
+            "status": "partial",
+            "model_call_count": 4,
+            "requirements": [
+                {"question": "第一项", "status": "answered"},
+                {"question": "第二项", "status": "missing"},
+            ],
+            "trace": [{
+                "cycle": 1,
+                "action": "search",
+                "search_queries": ["初始查询"],
+                "next_queries": ["补充查询"],
+                "new_results": [{
+                    "title": "证据标题",
+                    "preview": "不应输出的长正文",
+                }],
+                "evidence_count": 3,
+                "context_tokens_estimate": 1200,
+                "verification": {
+                    "valid": False,
+                    "requirements": [{
+                        "description": "第二项",
+                        "satisfied": False,
+                    }],
+                    "issues": [{"description": "缺少第二项证据"}],
+                },
+            }],
+        })
+
+        self.assertIn("状态: 部分回答 | 模型调用: 4", report)
+        self.assertIn("✓ 第一项", report)
+        self.assertIn("✗ 第二项", report)
+        self.assertIn("第 1 轮 · 继续检索", report)
+        self.assertIn("新证据: 证据标题", report)
+        self.assertIn("累计证据 3 条，上下文约 1200 tokens", report)
+        self.assertIn("下一步搜索: 补充查询", report)
+        self.assertIn("校验问题: 缺少第二项证据", report)
+        self.assertNotIn("不应输出的长正文", report)
 
     def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

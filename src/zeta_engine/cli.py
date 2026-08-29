@@ -1,5 +1,4 @@
 import argparse
-import json
 import logging
 from math import isfinite
 from pathlib import Path
@@ -187,6 +186,129 @@ def run_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def format_rag_debug(response: dict[str, object]) -> str:
+    """Render the RAG state and trace as a compact human-readable report."""
+
+    action_labels = {
+        "search": "继续检索",
+        "calculate": "执行计算",
+        "verified_answer": "答案通过校验",
+        "rejected_answer": "答案未通过校验",
+        "deterministic_sort": "确定性排序",
+        "fallback_answer": "使用兜底答案",
+        "invalid_response": "模型响应无效",
+        "invalid_calculation": "计算请求无效",
+        "no_results": "没有检索结果",
+    }
+    status_labels = {
+        "answered": "已回答",
+        "partial": "部分回答",
+        "missing": "材料不足",
+        "conflicting": "证据冲突",
+    }
+    status = str(response.get("status", "unknown"))
+    header = f"状态: {status_labels.get(status, status)}"
+    if isinstance(response.get("model_call_count"), int):
+        header += f" | 模型调用: {response['model_call_count']}"
+    lines = [header]
+
+    requirements = response.get("requirements", [])
+    if isinstance(requirements, list) and requirements:
+        lines.append("答案槽位:")
+        for item in requirements:
+            if not isinstance(item, dict):
+                continue
+            marker = "✓" if item.get("status") == "answered" else "✗"
+            lines.append(f"  {marker} {item.get('question', '未命名槽位')}")
+
+    trace = response.get("trace", [])
+    if not isinstance(trace, list) or not trace:
+        lines.append("没有 trace。")
+        return "\n".join(lines)
+
+    for index, item in enumerate(trace, start=1):
+        if not isinstance(item, dict):
+            continue
+        cycle = item.get("cycle", index)
+        action = str(item.get("action", "等待决策"))
+        lines.append(
+            f"\n第 {cycle} 轮 · {action_labels.get(action, action)}"
+        )
+
+        queries = item.get("search_queries", [])
+        if isinstance(queries, list) and queries:
+            lines.append("  搜索: " + " | ".join(map(str, queries)))
+
+        new_results = item.get("new_results", [])
+        if isinstance(new_results, list) and new_results:
+            titles = [
+                str(result.get("title") or result.get("url") or "未命名来源")
+                for result in new_results[:3]
+                if isinstance(result, dict)
+            ]
+            suffix = f" 等 {len(new_results)} 条" if len(new_results) > 3 else ""
+            lines.append(f"  新证据: {'；'.join(titles)}{suffix}")
+
+        evidence_count = item.get("evidence_count")
+        token_count = item.get("context_tokens_estimate")
+        if isinstance(evidence_count, int):
+            context_summary = f"  State: 累计证据 {evidence_count} 条"
+            if isinstance(token_count, int):
+                context_summary += f"，上下文约 {token_count} tokens"
+            lines.append(context_summary)
+
+        next_queries = item.get("next_queries", [])
+        if isinstance(next_queries, list) and next_queries:
+            lines.append("  下一步搜索: " + " | ".join(map(str, next_queries)))
+
+        calculations = item.get("calculations", [])
+        if isinstance(calculations, list):
+            for calculation in calculations:
+                if not isinstance(calculation, dict):
+                    continue
+                lines.append(
+                    "  计算: "
+                    f"{calculation.get('name', '未命名')} = "
+                    f"{calculation.get('result')} "
+                    f"({calculation.get('operator', 'unknown')}, "
+                    f"{calculation.get('input_count', '?')} 项输入)"
+                )
+
+        verification = item.get("verification")
+        if isinstance(verification, dict):
+            issues = verification.get("issues", [])
+            missing = [
+                requirement.get("description", "未命名槽位")
+                for requirement in verification.get("requirements", [])
+                if isinstance(requirement, dict)
+                and requirement.get("satisfied") is False
+            ]
+            if isinstance(issues, list):
+                for issue in issues:
+                    if isinstance(issue, dict):
+                        lines.append(
+                            f"  校验问题: {issue.get('description', issue)}"
+                        )
+            if missing:
+                lines.append("  尚缺: " + "；".join(map(str, missing)))
+            if verification.get("valid") is True:
+                lines.append("  校验: 通过")
+
+        if item.get("error"):
+            lines.append(f"  错误: {item['error']}")
+
+        for revision_name, label in (
+            ("temporal_revision", "时间冲突修订"),
+            ("final_revision", "最终修订"),
+        ):
+            revision = item.get(revision_name)
+            if isinstance(revision, dict):
+                outcome = "通过" if revision.get("valid") else "未通过"
+                lines.append(f"  {label}: {outcome}")
+
+    return "\n".join(lines)
+
+
 def run_rag(args: argparse.Namespace) -> int:
     if not args.document_db.is_file():
         raise SystemExit(f"数据库不存在: {args.document_db}")
@@ -217,8 +339,8 @@ def run_rag(args: argparse.Namespace) -> int:
         raise SystemExit(str(error)) from error
     print(f"回答\n{response['answer']}\n")
     if args.debug:
-        print("Debug Trace")
-        print(json.dumps(response.get("trace", []), ensure_ascii=False, indent=2))
+        print("调试信息")
+        print(format_rag_debug(response))
         print()
     print("搜索结果")
     for rank, result in enumerate(response["results"], start=1):
