@@ -8,8 +8,6 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
-from resiliparse.extract.html2text import extract_plain_text
-from resiliparse.parse.html import HTMLTree
 from url_normalize import url_normalize
 
 from zeta_engine.constants import (
@@ -104,49 +102,6 @@ def extract_page(html: str, url: str) -> tuple[tuple[str, str, str, str], list[s
     return document, links
 
 
-def extract_page_resiliparse(
-    html: str,
-    url: str,
-) -> tuple[tuple[str, str, str, str], list[str]]:
-    tree = HTMLTree.parse(html)
-    root = tree.document
-    links = []
-    for link in root.query_selector_all("a[href]"):
-        href = link.getattr("href").strip()
-        if href:
-            links.append(normalize_url(urljoin(url, href)))
-
-    title = ""
-    for selector in TITLE_SELECTORS:
-        headline = root.query_selector(selector)
-        if headline is not None and (title := " ".join(headline.text.split())):
-            break
-
-    if not title:
-        social_title = root.query_selector(SOCIAL_TITLE_SELECTOR)
-        if social_title is not None:
-            title = social_title.getattr("content").strip()
-    if not title:
-        title = " ".join((tree.title or "").split())
-
-    content = None
-    for selector in CONTENT_SELECTORS:
-        if content := root.query_selector(selector):
-            break
-    text = extract_plain_text(
-        content.html if content is not None else tree,
-        main_content=content is None,
-        preserve_formatting=False,
-    )
-    document = (
-        url,
-        title,
-        text,
-        datetime.now(timezone.utc).isoformat(),  # noqa: UP017
-    )
-    return document, links
-
-
 def crawl_urls(
     storage: Storage,
     seed_urls: list[str] | tuple[str, ...],
@@ -156,7 +111,6 @@ def crawl_urls(
     download_workers: int = 4,
     per_host_delay: float = 1.0,
     max_attempts: int = 3,
-    extractor: str = "beautifulsoup",
 ) -> dict[str, int]:
     stats = {
         "scheduled": 0,
@@ -172,12 +126,6 @@ def crawl_urls(
         raise ValueError("download_workers 必须大于 0")
     if max_attempts <= 0:
         raise ValueError("max_attempts 必须大于 0")
-    extract = {
-        "beautifulsoup": extract_page,
-        "resiliparse": extract_page_resiliparse,
-    }.get(extractor)
-    if extract is None:
-        raise ValueError(f"不支持的页面抽取器: {extractor}")
     if storage.documents is None or storage.queue is None:
         raise ValueError("爬虫需要 document_db 和 queue_db")
 
@@ -331,7 +279,7 @@ def crawl_urls(
                     continue
 
                 final_url, html = result
-                document, links = extract(html, final_url)
+                document, links = extract_page(html, final_url)
                 document_id = documents.save(
                     url=document[0],
                     title=document[1],

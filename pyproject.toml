@@ -7,15 +7,16 @@ requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "huggingface-hub>=1.29.0",
-    "ipykernel>=7.3.0",
     "jieba>=0.42.1",
     "numpy>=2.5.2",
     "openai>=3.5.0",
     "requests>=2.34.2",
-    "resiliparse>=1.0.9",
     "sentence-transformers>=6.0.0",
     "url-normalize>=3.0.0",
 ]
+
+[dependency-groups]
+dev = ["ipykernel>=7.3.0"]
 
 [project.scripts]
 zeta-engine = "zeta_engine.cli:main"

@@ -55,7 +55,6 @@ def run_crawler(args: argparse.Namespace) -> int:
             max_pages=args.max_pages,
             download_workers=args.workers,
             per_host_delay=args.delay,
-            extractor=args.extractor,
         )
 
     logging.info("本次统计: %s", stats)
@@ -320,12 +319,6 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--max-pages", type=int, default=500_000)
     crawl.add_argument("--workers", type=int, default=16)
     crawl.add_argument("--delay", type=float, default=0.2)
-    crawl.add_argument(
-        "--extractor",
-        choices=("beautifulsoup", "resiliparse"),
-        default="beautifulsoup",
-        help="网页内容抽取器",
-    )
     crawl.set_defaults(handler=run_crawler)
 
     stats = commands.add_parser("stats", help="查看数据库统计")

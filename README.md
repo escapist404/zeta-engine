@@ -38,12 +38,6 @@ uv run zeta-engine crawl \
 uv run zeta-engine crawl --help
 ```
 
-默认使用原有的 BeautifulSoup 抽取器。要改用 Resiliparse：
-
-```bash
-uv run zeta-engine crawl --extractor resiliparse
-```
-
 ### 构造索引
 
 ```bash

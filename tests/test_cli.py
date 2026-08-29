@@ -11,14 +11,6 @@ from zeta_engine.storage import Storage
 
 
 class CliTest(unittest.TestCase):
-    def test_crawl_accepts_resiliparse_extractor(self) -> None:
-        args = build_parser().parse_args([
-            "crawl",
-            "--extractor", "resiliparse",
-        ])
-
-        self.assertEqual(args.extractor, "resiliparse")
-
     def test_runs_evaluation_from_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document_db = Path(directory) / "documents.db"
