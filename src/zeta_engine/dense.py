@@ -1,5 +1,6 @@
 import json
 import logging
+import sqlite3
 import threading
 import time
 import uuid
@@ -11,14 +12,14 @@ from typing import Any
 import numpy as np
 
 from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize
+from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = Path("models/bge-small-zh-v1.5")
 DEFAULT_INDEX_DIR = Path("data/dense")
 QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EMBEDDING_DIMENSION = 512
 MAX_TOKENS = 384
 TITLE_MAX_TOKENS = 64
@@ -33,6 +34,21 @@ class DenseHit:
     document_id: int
     score: float
     snippet: str
+
+
+@dataclass(frozen=True)
+class PassageHit:
+    """One ranked, independently citable passage."""
+
+    document_id: int
+    chunk_index: int
+    score: float
+    text: str
+    title: str = ""
+
+    @property
+    def passage_id(self) -> str:
+        return f"{self.document_id}:{self.chunk_index}"
 
 
 def _chunk_document(
@@ -199,6 +215,7 @@ def build_dense_index(
             records.append({
                 "document_id": document_id,
                 "chunk_index": chunk_index,
+                "title": text_normalize(title),
                 "text": snippet,
             })
 
@@ -218,8 +235,10 @@ def build_dense_index(
     build_id = uuid.uuid4().hex
     vector_name = f"vectors-{build_id}.npy"
     chunk_name = f"chunks-{build_id}.jsonl"
+    passage_index_name = f"passages-{build_id}.db"
     vector_path = output_dir / vector_name
     chunk_path = output_dir / chunk_name
+    passage_index_path = output_dir / passage_index_name
     metadata_path = output_dir / "metadata.json"
     metadata_temporary_path = output_dir / f".metadata-{build_id}.json"
 
@@ -227,6 +246,8 @@ def build_dense_index(
     with chunk_path.open("w", encoding="utf-8") as file:
         for record in records:
             file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    _build_passage_sparse_index(passage_index_path, records)
 
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -242,6 +263,8 @@ def build_dense_index(
         "chunk_count": len(records),
         "vector_file": vector_name,
         "chunk_file": chunk_name,
+        "passage_index_file": passage_index_name,
+        "passage_tokenizer_mode": "search",
     }
     metadata_temporary_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
@@ -280,6 +303,113 @@ def _read_metadata(index_dir: Path) -> dict[str, Any]:
     return metadata
 
 
+def upgrade_dense_index_v3(
+    storage: Storage,
+    index_dir: str | Path = DEFAULT_INDEX_DIR,
+) -> dict[str, int]:
+    """Add canonical passage metadata and BM25 to an existing v3 index.
+
+    The embedding vectors and chunk boundaries are unchanged between v3 and
+    v4, so this migration avoids recomputing embeddings.
+    """
+
+    if storage.documents is None:
+        raise ValueError("Dense 索引迁移需要 document_db")
+    index_dir = Path(index_dir)
+    metadata = _read_metadata(index_dir)
+    if metadata.get("schema_version") == SCHEMA_VERSION:
+        _vectors, records, validated = _load_dense_index(
+            str(index_dir.resolve())
+        )
+        document_count = validated.get("document_count")
+        if not isinstance(document_count, int) or document_count < 0:
+            raise ValueError("Dense v4 索引 document_count 无效")
+        return {
+            "documents": document_count,
+            "chunks": len(records),
+        }
+    if metadata.get("schema_version") != 3:
+        raise ValueError("只有 Dense v3 索引可以执行此迁移")
+    chunk_count = metadata.get("chunk_count")
+    if not isinstance(chunk_count, int) or chunk_count < 0:
+        raise ValueError("Dense v3 索引 chunk_count 无效")
+    vector_file = metadata.get("vector_file")
+    chunk_file = metadata.get("chunk_file")
+    if not isinstance(vector_file, str) or not isinstance(chunk_file, str):
+        raise ValueError("Dense v3 索引文件字段无效")
+
+    vector_path = index_dir / vector_file
+    old_chunk_path = index_dir / chunk_file
+    try:
+        vectors = np.load(vector_path, allow_pickle=False)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Dense 向量文件损坏: {vector_path}") from error
+    _validate_vectors(vectors, chunk_count)
+
+    titles = {
+        document_id: text_normalize(title)
+        for document_id, _url, title, _text, _fetched_at
+        in storage.documents.iter_all()
+    }
+    expected_documents = metadata.get("document_count")
+    if isinstance(expected_documents, int) and len(titles) != expected_documents:
+        raise ValueError("文档库数量已变化，不能复用旧 Dense 向量")
+
+    records: list[dict[str, int | str]] = []
+    try:
+        with old_chunk_path.open(encoding="utf-8") as file:
+            for line_number, line in enumerate(file, start=1):
+                record = json.loads(line)
+                document_id = record.get("document_id") if isinstance(record, dict) else None
+                if (
+                    not isinstance(record, dict)
+                    or not isinstance(document_id, int)
+                    or document_id not in titles
+                    or not isinstance(record.get("chunk_index"), int)
+                    or not isinstance(record.get("text"), str)
+                ):
+                    raise ValueError(f"Dense 分块第 {line_number} 行格式无效")
+                records.append({
+                    "document_id": document_id,
+                    "chunk_index": int(record["chunk_index"]),
+                    "title": titles[document_id],
+                    "text": text_normalize(str(record["text"])),
+                })
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Dense 分块文件损坏: {old_chunk_path}") from error
+    if len(records) != chunk_count:
+        raise ValueError("Dense v3 分块数量与元数据不一致")
+
+    build_id = uuid.uuid4().hex
+    new_chunk_name = f"chunks-{build_id}.jsonl"
+    passage_index_name = f"passages-{build_id}.db"
+    new_chunk_path = index_dir / new_chunk_name
+    passage_index_path = index_dir / passage_index_name
+    temporary_metadata_path = index_dir / f".metadata-{build_id}.json"
+    with new_chunk_path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _build_passage_sparse_index(passage_index_path, records)
+
+    upgraded = dict(metadata)
+    upgraded.update({
+        "schema_version": SCHEMA_VERSION,
+        "chunk_file": new_chunk_name,
+        "passage_index_file": passage_index_name,
+        "passage_tokenizer_mode": "search",
+    })
+    temporary_metadata_path.write_text(
+        json.dumps(upgraded, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_metadata_path.replace(index_dir / "metadata.json")
+    _load_dense_index.cache_clear()
+    return {
+        "documents": len(titles),
+        "chunks": len(records),
+    }
+
+
 @lru_cache(maxsize=2)
 def _load_dense_index(
     index_dir_value: str,
@@ -296,6 +426,8 @@ def _load_dense_index(
         "chunk_count",
         "vector_file",
         "chunk_file",
+        "passage_index_file",
+        "passage_tokenizer_mode",
     }
     missing = required - metadata.keys()
     if missing:
@@ -322,13 +454,20 @@ def _load_dense_index(
         raise ValueError("Dense 索引 vector_file 无效")
     if not isinstance(metadata["chunk_file"], str):
         raise ValueError("Dense 索引 chunk_file 无效")
+    if not isinstance(metadata["passage_index_file"], str):
+        raise ValueError("Dense 索引 passage_index_file 无效")
+    if metadata["passage_tokenizer_mode"] != "search":
+        raise ValueError("Dense 索引 passage_tokenizer_mode 无效")
 
     vector_path = index_dir / metadata["vector_file"]
     chunk_path = index_dir / metadata["chunk_file"]
+    passage_index_path = index_dir / metadata["passage_index_file"]
     if not vector_path.is_file():
         raise FileNotFoundError(f"Dense 向量文件不存在: {vector_path}")
     if not chunk_path.is_file():
         raise FileNotFoundError(f"Dense 分块文件不存在: {chunk_path}")
+    if not passage_index_path.is_file():
+        raise FileNotFoundError(f"Passage 倒排索引不存在: {passage_index_path}")
 
     try:
         vectors = np.load(vector_path, allow_pickle=False)
@@ -359,6 +498,147 @@ def _load_dense_index(
         )
 
     return vectors, tuple(records), metadata
+
+
+def _build_passage_sparse_index(
+    path: Path,
+    records: list[dict[str, int | str]],
+) -> None:
+    """Build an FTS5 BM25 index over the exact Dense passage boundaries."""
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA journal_mode = OFF")
+        connection.execute("PRAGMA synchronous = OFF")
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE passages USING fts5(
+                title_tokens,
+                text_tokens,
+                document_id UNINDEXED,
+                chunk_index UNINDEXED,
+                tokenize = 'unicode61'
+            )
+            """
+        )
+        batch = []
+        for record in records:
+            title = text_normalize(str(record.get("title", "")))
+            text = text_normalize(str(record["text"]))
+            batch.append((
+                " ".join(
+                    term
+                    for term, _offset in tokenize_with_positions(title, mode="search")
+                ),
+                " ".join(
+                    term
+                    for term, _offset in tokenize_with_positions(text, mode="search")
+                ),
+                int(record["document_id"]),
+                int(record["chunk_index"]),
+            ))
+            if len(batch) == 1000:
+                connection.executemany(
+                    "INSERT INTO passages VALUES (?, ?, ?, ?)",
+                    batch,
+                )
+                batch.clear()
+        if batch:
+            connection.executemany(
+                "INSERT INTO passages VALUES (?, ?, ?, ?)",
+                batch,
+            )
+        connection.execute("INSERT INTO passages(passages) VALUES ('optimize')")
+
+
+def _passage_from_row(
+    records: tuple[dict[str, int | str], ...],
+    row_index: int,
+    score: float,
+) -> PassageHit:
+    record = records[row_index]
+    return PassageHit(
+        document_id=int(record["document_id"]),
+        chunk_index=int(record["chunk_index"]),
+        score=float(score),
+        text=text_normalize(str(record["text"])),
+        title=text_normalize(str(record.get("title", ""))),
+    )
+
+
+def search_dense_passages(
+    query: str,
+    index_dir: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    limit: int = 100,
+    device: str | None = None,
+) -> list[PassageHit]:
+    """Return individual passages ranked by embedding similarity."""
+
+    query = text_normalize(query)
+    if not query or limit <= 0:
+        return []
+
+    index_dir = Path(index_dir)
+    vectors, records, metadata = _load_dense_index(str(index_dir.resolve()))
+    if not records:
+        return []
+
+    model = _load_model(metadata["model_path"], device)
+    query_vectors = _encode(
+        model,
+        [metadata["query_instruction"] + query],
+        batch_size=1,
+        show_progress_bar=False,
+    )
+    _validate_vectors(query_vectors, 1)
+    scores = vectors @ query_vectors[0]
+    order = np.argsort(-scores, kind="stable")[:limit]
+    return [
+        _passage_from_row(records, int(row_index), float(scores[row_index]))
+        for row_index in order
+    ]
+
+
+def search_sparse_passages(
+    query: str,
+    index_dir: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    limit: int = 100,
+) -> list[PassageHit]:
+    """Return individual passages ranked by passage-level BM25."""
+
+    query = text_normalize(query)
+    if not query or limit <= 0:
+        return []
+    terms = list(dict.fromkeys(
+        term
+        for term, _offset in tokenize_with_positions(query, mode="search")
+    ))
+    if not terms:
+        return []
+
+    index_dir = Path(index_dir)
+    _vectors, records, metadata = _load_dense_index(str(index_dir.resolve()))
+    passage_index_path = index_dir.resolve() / str(metadata["passage_index_file"])
+    match_query = " OR ".join(
+        f'"{term.replace(chr(34), chr(34) * 2)}"'
+        for term in terms
+    )
+    with sqlite3.connect(passage_index_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT rowid, bm25(passages, 2.0, 1.0)
+            FROM passages
+            WHERE passages MATCH ?
+            ORDER BY bm25(passages, 2.0, 1.0), rowid
+            LIMIT ?
+            """,
+            (match_query, limit),
+        ).fetchall()
+    return [
+        _passage_from_row(records, int(row_id) - 1, -float(rank))
+        for row_id, rank in rows
+    ]
 
 
 def search_dense(

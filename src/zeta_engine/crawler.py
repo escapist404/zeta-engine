@@ -23,6 +23,7 @@ from zeta_engine.constants import (
     TIMEOUT,
     TITLE_SELECTORS,
 )
+from zeta_engine.extraction_rules import resolve_extraction_rule
 from zeta_engine.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,12 @@ MINIMAL_HTML_TAGS = frozenset({
     "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
 })
 MINIMAL_HTML_DROP_TAGS = frozenset({
-    "button", "canvas", "form", "iframe", "input", "noscript", "object",
+    "button", "canvas", "iframe", "input", "noscript", "object",
     "script", "select", "style", "svg", "template", "textarea",
 })
+UNIVERSAL_EXCLUDED_HTML_SELECTORS = (
+    "script, style, noscript, template, [hidden], [aria-hidden='true']"
+)
 
 
 def normalize_url(url: str) -> str:
@@ -127,6 +131,7 @@ def _extract_page_beautifulsoup(
     url: str,
 ) -> tuple[tuple[str, str, str, str, str], list[str]]:
     soup = BeautifulSoup(html, "html.parser")
+    rule = resolve_extraction_rule(url)
     links = [
         normalize_url(urljoin(url, tag["href"].strip()))
         for tag in soup.find_all("a", href=True)
@@ -134,7 +139,13 @@ def _extract_page_beautifulsoup(
     ]
 
     headline = next(
-        filter(None, (soup.select_one(selector) for selector in TITLE_SELECTORS)),
+        filter(None, (
+            soup.select_one(selector)
+            for selector in (
+                (rule.title_selectors if rule is not None else ())
+                + TITLE_SELECTORS
+            )
+        )),
         None,
     )
     social_title = soup.select_one(SOCIAL_TITLE_SELECTOR)
@@ -148,14 +159,27 @@ def _extract_page_beautifulsoup(
         else ""
     )
 
-    for tag in soup.select(EXCLUDED_HTML_SELECTORS):
-        tag.decompose()
-
     content = soup.body or soup
-    for selector in CONTENT_SELECTORS:
+    used_site_selector = False
+    for selector in rule.content_selectors if rule is not None else ():
         if selected := soup.select_one(selector):
             content = selected
+            used_site_selector = True
             break
+    if not used_site_selector:
+        for selector in CONTENT_SELECTORS:
+            if selected := soup.select_one(selector):
+                content = selected
+                break
+    excluded_selectors = (
+        UNIVERSAL_EXCLUDED_HTML_SELECTORS
+        if used_site_selector
+        else EXCLUDED_HTML_SELECTORS
+    )
+    if rule is not None:
+        excluded_selectors += ", " + ", ".join(rule.excluded_selectors)
+    for tag in content.select(excluded_selectors):
+        tag.decompose()
     text = content.get_text(" ", strip=True)
     content_html = _minimal_content_html(content, url)
     document = (
@@ -174,6 +198,7 @@ def _extract_page_resiliparse(
 ) -> tuple[tuple[str, str, str, str, str], list[str]]:
     tree = HTMLTree.parse(html)
     root = tree.document
+    rule = resolve_extraction_rule(url)
     links = [
         normalize_url(urljoin(url, href))
         for tag in root.query_selector_all("a[href]")
@@ -181,7 +206,10 @@ def _extract_page_resiliparse(
     ]
 
     title = ""
-    for selector in TITLE_SELECTORS:
+    for selector in (
+        (rule.title_selectors if rule is not None else ())
+        + TITLE_SELECTORS
+    ):
         headline = root.query_selector(selector)
         if headline is not None and (title := " ".join(headline.text.split())):
             break
@@ -193,7 +221,10 @@ def _extract_page_resiliparse(
         title = " ".join((tree.title or "").split())
 
     content = None
-    for selector in CONTENT_SELECTORS:
+    for selector in (
+        (rule.content_selectors if rule is not None else ())
+        + CONTENT_SELECTORS
+    ):
         if (selected := root.query_selector(selector)) is not None:
             content = selected
             break

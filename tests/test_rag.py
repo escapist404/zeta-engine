@@ -5,15 +5,25 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from zeta_engine.rag import (
+    AGENT_MAX_CYCLES,
     Evidence,
     LLM_API_KEY_ENV,
     LLM_BASE_URL,
+    LLM_BASE_URL_ENV,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MAX_RETRIES,
     LLM_MODEL,
+    LLM_MODEL_ENV,
     LLM_TIMEOUT_SECONDS,
     RAG_MAX_CONTEXT_CHARS,
     RAG_NO_RESULTS_ANSWER,
+    _parse_agent_action,
+    _parse_verification,
+    _deterministic_numbered_event_answer,
+    _deterministic_collection_bucket_answer,
+    _deterministic_complete_table_ratio_answer,
+    _range_classification_rules,
+    _requires_complete_collection,
     _run_calculations,
     agentic_rag_answer,
     build_agent_prompt,
@@ -64,6 +74,156 @@ def verification(
 
 
 class RagTest(unittest.TestCase):
+    def test_default_cycle_budget_allows_post_retrieval_repair(self) -> None:
+        self.assertGreaterEqual(AGENT_MAX_CYCLES, 5)
+
+    def test_parses_collection_tool_action(self) -> None:
+        decision = _parse_agent_action(json.dumps({
+            "action": "collection",
+            "query": "完整扫描目标名单并保留分组边界",
+            "slots": [],
+        }, ensure_ascii=False))
+
+        self.assertEqual(decision.action, "collection")
+        self.assertEqual(
+            decision.collection_query,
+            "完整扫描目标名单并保留分组边界",
+        )
+
+    def test_accepts_text_alias_for_agent_claim(self) -> None:
+        decision = _parse_agent_action(json.dumps({
+            "action": "answer",
+            "answer": "答案",
+            "claims": [{
+                "text": "可验证断言",
+                "evidence_ids": ["ev_1"],
+                "calculation_ids": [],
+            }],
+            "slots": [],
+        }, ensure_ascii=False))
+
+        self.assertEqual(decision.claims[0]["statement"], "可验证断言")
+
+    def test_grounded_ratio_uses_two_operands(self) -> None:
+        evidence = Evidence.from_result({
+            "title": "完整名单",
+            "url": "https://example.test/list",
+            "content": "拟推荐人数不少于34人，完整名单共127人。",
+        })
+
+        completed = _run_calculations([{
+            "name": "最低比例",
+            "operator": "ratio",
+            "items": [
+                {"value": 34, "evidence_ids": [evidence.evidence_id]},
+                {"value": 127, "evidence_ids": [evidence.evidence_id]},
+            ],
+        }], [evidence], [])
+
+        self.assertAlmostEqual(completed[0]["result"], 34 / 127)
+
+    def test_parses_answer_slots_and_slot_scoped_queries(self) -> None:
+        decision = _parse_agent_action(json.dumps({
+            "action": "search",
+            "slots": [
+                {
+                    "id": "person_a",
+                    "question": "甲参加了哪些项目",
+                    "status": "answered",
+                    "evidence_ids": ["ev_a"],
+                },
+                {
+                    "id": "person_b",
+                    "question": "乙参加了哪些项目",
+                    "status": "missing",
+                    "evidence_ids": [],
+                },
+            ],
+            "queries": [{
+                "slot_id": "person_b",
+                "query": "乙 完整项目名单",
+            }],
+        }, ensure_ascii=False))
+
+        self.assertEqual(decision.action, "search")
+        self.assertEqual(decision.queries, ["乙 完整项目名单"])
+        self.assertEqual(
+            decision.query_slots,
+            {"乙 完整项目名单": "person_b"},
+        )
+        self.assertEqual(
+            [slot.status for slot in decision.slots],
+            ["answered", "missing"],
+        )
+
+    def test_rejects_query_for_unknown_answer_slot(self) -> None:
+        with self.assertRaisesRegex(ValueError, "slot_id"):
+            _parse_agent_action(json.dumps({
+                "action": "search",
+                "slots": [{
+                    "id": "s1",
+                    "question": "第一个答案",
+                    "status": "missing",
+                    "evidence_ids": [],
+                }],
+                "queries": [{"slot_id": "s2", "query": "补充搜索"}],
+            }, ensure_ascii=False))
+
+    def test_rejects_query_for_answered_slot(self) -> None:
+        with self.assertRaisesRegex(ValueError, "已回答"):
+            _parse_agent_action(json.dumps({
+                "action": "search",
+                "slots": [{
+                    "id": "s1",
+                    "question": "第一个答案",
+                    "status": "answered",
+                    "evidence_ids": ["ev_1"],
+                }],
+                "queries": [{"slot_id": "s1", "query": "重复搜索"}],
+            }, ensure_ascii=False))
+
+    def test_accepts_claim_alias_from_model_output(self) -> None:
+        decision = _parse_agent_action(json.dumps({
+            "action": "answer",
+            "answer": "答案",
+            "claims": [{
+                "claim": "关键断言",
+                "evidence_ids": ["ev_1"],
+                "calculation_ids": [],
+            }],
+        }, ensure_ascii=False))
+
+        self.assertEqual(decision.claims[0]["statement"], "关键断言")
+
+    def test_accepts_string_issues_and_keeps_verifier_queries(self) -> None:
+        response = json.dumps({
+            "valid": False,
+            "requirements": [{
+                "description": "补齐缺失项",
+                "satisfied": False,
+                "evidence_ids": ["ev_1"],
+            }],
+            "claims": [{
+                "statement": "现有部分答案",
+                "status": "supported",
+                "evidence_ids": ["ev_1"],
+                "calculation_ids": [],
+            }],
+            "conflicts": [],
+            "issues": ["还缺少一项明确要求"],
+            "queries": ["缺失项 精确查询"],
+        }, ensure_ascii=False)
+
+        valid, feedback, queries, ledger = _parse_verification(
+            response,
+            allowed_evidence_ids=["ev_1"],
+        )
+
+        self.assertFalse(valid)
+        self.assertIn("还缺少一项明确要求", feedback)
+        self.assertEqual(queries, ["缺失项 精确查询"])
+        self.assertEqual(ledger["issues"][0]["type"], "incomplete")
+
     def test_executes_grounded_set_operations_and_counts_results(self) -> None:
         evidence = [Evidence.from_result({
             "url": "https://example.test/lists",
@@ -95,6 +255,410 @@ class RagTest(unittest.TestCase):
         self.assertEqual(calculations[3]["result"], 2)
         self.assertEqual(calculations[3]["evidence_ids"], [evidence_id])
 
+    def test_rejects_identical_calculations_with_different_names(self) -> None:
+        evidence = [Evidence.from_result({
+            "url": "https://example.test/members",
+            "content": "成员：甲、乙",
+        })]
+        evidence_id = evidence[0].evidence_id
+        specifications = [
+            {
+                "name": "第一个名称",
+                "operator": "count",
+                "values": ["甲", "乙"],
+                "evidence_ids": [evidence_id],
+            },
+            {
+                "name": "另一个名称",
+                "operator": "count",
+                "values": ["甲", "乙"],
+                "evidence_ids": [evidence_id],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "完全相同的计算"):
+            _run_calculations(specifications, evidence, [])
+
+    def test_allows_different_operations_on_the_same_input(self) -> None:
+        evidence = [Evidence.from_result({
+            "url": "https://example.test/members",
+            "content": "成员：甲、甲、乙",
+        })]
+        evidence_id = evidence[0].evidence_id
+
+        calculations = _run_calculations(
+            [
+                {
+                    "name": "记录数",
+                    "operator": "count",
+                    "values": ["甲", "甲", "乙"],
+                    "evidence_ids": [evidence_id],
+                },
+                {
+                    "name": "去重数",
+                    "operator": "count_unique",
+                    "values": ["甲", "甲", "乙"],
+                    "evidence_ids": [evidence_id],
+                },
+            ],
+            evidence,
+            [],
+        )
+
+        self.assertEqual([item["result"] for item in calculations], [3, 2])
+
+    def test_classifies_a_grounded_number_with_explicit_boundaries(self) -> None:
+        evidence = [Evidence.from_result({
+            "url": "https://example.test/count",
+            "content": "2019年共有59人",
+        })]
+        evidence_id = evidence[0].evidence_id
+
+        calculations = _run_calculations(
+            [
+                {
+                    "name": "人数",
+                    "operator": "max",
+                    "values": [59],
+                    "evidence_ids": [evidence_id],
+                },
+                {
+                    "name": "教室类型",
+                    "operator": "classify",
+                    "items": [{"calculation": "人数"}],
+                    "rules": [
+                        {"label": "小型教室", "lt": 60},
+                        {"label": "中型教室", "gte": 60, "lte": 100},
+                        {"label": "大型教室", "gte": 101, "lte": 200},
+                        {"label": "特大型教室", "gt": 200},
+                    ],
+                },
+            ],
+            evidence,
+            [],
+        )
+
+        self.assertEqual(calculations[1]["result"], "小型教室")
+        self.assertEqual(calculations[1]["evidence_ids"], [evidence_id])
+
+    def test_event_total_uses_terminal_grounded_calculation(self) -> None:
+        results = [{
+            "title": "第一次企业参访",
+            "url": "https://example.test/one",
+            "content": "第一次企业参访",
+        }, {
+            "title": "第二次企业参访",
+            "url": "https://example.test/two",
+            "content": "第二次企业参访",
+        }]
+        evidence_ids = [
+            Evidence.from_result(result).evidence_id for result in results
+        ]
+        decision = json.dumps({
+            "action": "calculate",
+            "calculations": [
+                {
+                    "name": "第一类次数",
+                    "operator": "count_unique",
+                    "values": [evidence_ids[0]],
+                    "evidence_ids": [evidence_ids[0]],
+                },
+                {
+                    "name": "第二类次数",
+                    "operator": "count_unique",
+                    "values": [evidence_ids[1]],
+                    "evidence_ids": [evidence_ids[1]],
+                },
+                {
+                    "name": "总次数",
+                    "operator": "sum",
+                    "values": [
+                        {"calculation": "第一类次数"},
+                        {"calculation": "第二类次数"},
+                    ],
+                    "evidence_ids": evidence_ids,
+                },
+            ],
+        }, ensure_ascii=False)
+
+        with patch("zeta_engine.rag.call_model", return_value=decision) as model:
+            response = agentic_rag_answer(
+                "两类企业参访一共多少次？",
+                lambda _query, _top_k: results,
+                debug=True,
+            )
+
+        self.assertEqual(response["answer"], "一共2次。")
+        self.assertEqual(response["trace"][0]["action"], "deterministic_calculation")
+        model.assert_called_once()
+
+    def test_numbered_event_count_deduplicates_listing_and_detail_pages(self) -> None:
+        results = [
+            {
+                "title": "企业参访第七站：快手公司参访纪实",
+                "url": "https://example.test/kuaishou-7",
+                "content": "第七站前往快手公司。",
+            },
+            {
+                "title": "活动列表",
+                "url": "https://example.test/list",
+                "content": (
+                    "企业参访第7站：快手公司；"
+                    "企业参访第14站：快手公司；"
+                    "企业参访第15站：腾讯公司；"
+                    "企业参访第16站：腾讯公司。"
+                ),
+            },
+            {
+                "title": "腾讯就业宣讲会",
+                "url": "https://example.test/recruiting",
+                "content": "腾讯公司举办就业宣讲会，不属于企业参访。",
+            },
+        ]
+        evidence = [Evidence.from_result(result) for result in results]
+
+        answer, claims = _deterministic_numbered_event_answer(
+            "企业参访中，参访快手公司和腾讯公司一共多少次？",
+            evidence,
+        )
+
+        self.assertEqual(answer, "一共4次。")
+        self.assertEqual(len(claims), 4)
+
+    def test_complete_collection_sizes_are_bucketed_by_query_rules(self) -> None:
+        evidence = [
+            Evidence.from_result({
+                "title": f"{year}年项目成员名单",
+                "url": f"https://example.test/{year}",
+                "content": f"完整表格集合共{size}项",
+                "collection_size": str(size),
+                "collection_complete": "true",
+            })
+            for year, size in ((2019, 59), (2020, 65), (2021, 257))
+        ]
+        query = (
+            "不满60人使用小型教室，60至100人使用中型教室，"
+            "101至200人使用大型教室，超过200人使用特大型教室。"
+            "2019、2020和2021年分别使用哪类教室？"
+        )
+
+        answer, claims = _deterministic_collection_bucket_answer(query, evidence)
+
+        self.assertEqual(
+            answer,
+            "2019年使用小型教室；2020年使用中型教室；"
+            "2021年使用特大型教室。",
+        )
+        self.assertEqual(len(claims), 3)
+
+    def test_document_aggregate_wins_over_conflicting_subtable_sizes(self) -> None:
+        evidence = []
+        for year, total, subtables in (
+            (2019, 59, (40, 19)),
+            (2020, 65, (45, 20)),
+            (2021, 257, (127, 130)),
+        ):
+            evidence.append(Evidence.from_result({
+                "title": f"{year}年项目名单 · 全部表格",
+                "content": f"文档级完整集合共{total}项",
+                "collection_size": str(total),
+                "collection_complete": "true",
+                "evidence_scope": "complete_document_tables",
+            }))
+            evidence.extend(Evidence.from_result({
+                "title": f"{year}年项目名单 · 子表{index}",
+                "content": f"完整子表共{size}项",
+                "collection_size": str(size),
+                "collection_complete": "true",
+                "evidence_scope": "complete_table_section",
+            }) for index, size in enumerate(subtables, start=1))
+        query = (
+            "不满60人使用小型教室，60至100人使用中型教室，"
+            "101至200人使用大型教室，超过200人使用特大型教室。"
+            "2019、2020和2021年分别使用哪类教室？"
+        )
+
+        answer, claims = _deterministic_collection_bucket_answer(query, evidence)
+
+        self.assertEqual(
+            answer,
+            "2019年使用小型教室；2020年使用中型教室；"
+            "2021年使用特大型教室。",
+        )
+        self.assertEqual(len(claims), 3)
+
+    def test_complete_table_ratio_bound_is_materialized_without_another_model_call(self) -> None:
+        def result(section: str, numerator: int, denominator: int) -> dict[str, str]:
+            return {
+                "title": f"2021年夏令营名单 · {section}",
+                "url": "https://example.test/camp",
+                "content": "完整表格与同章节数量下界已扫描。",
+                "evidence_scope": "complete_table_section",
+                "collection_complete": "true",
+                "derived_relations": json.dumps([{
+                    "kind": "ratio_bound",
+                    "direction": "lower",
+                    "numerator": float(numerator),
+                    "denominator": denominator,
+                    "ratio": numerator / denominator,
+                }]),
+            }
+
+        answer, claims = _deterministic_complete_table_ratio_answer(
+            "2021年夏令营学硕最低录取比",
+            [
+                Evidence.from_result(result("学术硕士营员名单", 34, 127)),
+                Evidence.from_result(result("直博营员名单", 39, 130)),
+            ],
+        )
+
+        self.assertEqual(answer, "最低比例为26.77%（34/127≈0.2677）。")
+        self.assertEqual(len(claims), 1)
+
+    def test_bounded_ratio_requires_complete_collection(self) -> None:
+        self.assertTrue(_requires_complete_collection("项目的最低录取比是多少？"))
+        self.assertTrue(_requires_complete_collection("最高通过率"))
+        self.assertTrue(_requires_complete_collection(
+            "不满60人使用小型教室，60至100人使用中型教室，"
+            "2019、2020年分别使用哪类教室？"
+        ))
+        self.assertFalse(_requires_complete_collection("录取人数是多少？"))
+        self.assertFalse(_requires_complete_collection("录取比例是多少？"))
+
+    def test_agentic_rag_closes_after_complete_table_ratio_tool_result(self) -> None:
+        initial = {
+            "title": "2021年夏令营公告",
+            "url": "https://example.test/camp",
+            "content": "拟推荐优秀营员不少于34人。",
+        }
+        tool_result = {
+            "title": "2021年夏令营公告 · 学术硕士营员名单",
+            "url": "https://example.test/camp",
+            "content": "完整表格与同章节数量下界已扫描。",
+            "evidence_scope": "complete_table_section",
+            "collection_complete": "true",
+            "derived_relations": json.dumps([{
+                "kind": "ratio_bound",
+                "direction": "lower",
+                "numerator": 34.0,
+                "denominator": 127,
+                "ratio": 34 / 127,
+            }]),
+        }
+        with patch(
+            "zeta_engine.rag.call_model",
+            return_value=json.dumps({
+                "action": "collection",
+                "query": "扫描完整学术硕士名单并计算最低录取比",
+                "slots": [],
+            }),
+        ) as model:
+            response = agentic_rag_answer(
+                "2021年夏令营学硕最低录取比",
+                lambda _query, _top_k: [initial],
+                collection_fn=lambda _tool_query: [tool_result],
+                debug=True,
+            )
+
+        self.assertEqual(response["answer"], "最低比例为26.77%（34/127≈0.2677）。")
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(
+            [item["action"] for item in response["trace"]],
+            ["collection", "deterministic_table_ratio"],
+        )
+
+    def test_bounded_ratio_overrides_agent_refusal_with_collection(self) -> None:
+        initial = {
+            "title": "项目公告",
+            "url": "https://example.test/camp",
+            "content": "入选者不少于3人。",
+        }
+        tool_result = {
+            "title": "项目公告 · 完整名单",
+            "url": "https://example.test/camp",
+            "content": "完整表格与同章节数量下界已扫描。",
+            "evidence_scope": "complete_table_section",
+            "collection_complete": "true",
+            "derived_relations": json.dumps([{
+                "kind": "ratio_bound",
+                "direction": "lower",
+                "numerator": 3.0,
+                "denominator": 8,
+                "ratio": 3 / 8,
+            }]),
+        }
+        with patch(
+            "zeta_engine.rag.call_model",
+            return_value=(
+                '{"action":"answer","answer":"缺少申请人数，无法计算",'
+                '"claims":[],"slots":[]}'
+            ),
+        ) as model:
+            response = agentic_rag_answer(
+                "项目最低录取比是多少？",
+                lambda _query, _top_k: [initial],
+                collection_fn=lambda _tool_query: [tool_result],
+                debug=True,
+            )
+
+        self.assertEqual(response["answer"], "最低比例为37.50%（3/8≈0.3750）。")
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(response["trace"][0]["agent_action_overridden"], "answer")
+        self.assertEqual(
+            [item["action"] for item in response["trace"]],
+            ["collection", "deterministic_table_ratio"],
+        )
+
+    def test_cross_year_bucketing_overrides_agent_guess_with_collection(self) -> None:
+        query = (
+            "不满60人使用小型教室，60至100人使用中型教室，"
+            "101至200人使用大型教室，超过200人使用特大型教室。"
+            "2019、2020年和2021年分别应使用哪类教室？"
+        )
+        sizes = ((2019, 59), (2020, 65), (2021, 257))
+        tool_results = [{
+            "title": f"{year}年项目完整名单",
+            "url": f"https://example.test/{year}",
+            "content": f"确定性工具已扫描完整名单，共{size}项。",
+            "collection_complete": "true",
+            "collection_size": str(size),
+        } for year, size in sizes]
+        with patch(
+            "zeta_engine.rag.call_model",
+            return_value=(
+                '{"action":"answer","answer":"三年都使用小型教室",'
+                '"claims":[],"slots":[]}'
+            ),
+        ) as model:
+            response = agentic_rag_answer(
+                query,
+                lambda _query, _top_k: [],
+                collection_fn=lambda _tool_query: tool_results,
+                debug=True,
+            )
+
+        self.assertEqual(
+            response["answer"],
+            "2019年使用小型教室；2020年使用中型教室；"
+            "2021年使用特大型教室。",
+        )
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(
+            [item["action"] for item in response["trace"]],
+            ["collection", "deterministic_collection_bucket"],
+        )
+
+    def test_range_classification_rules_accept_normalized_commas(self) -> None:
+        query = (
+            "不满60人使用小型教室,60至100人使用中型教室,"
+            "101至200人使用大型教室,超过200人使用特大型教室"
+        )
+
+        self.assertEqual(
+            [rule[-1] for rule in _range_classification_rules(query)],
+            ["小型教室", "中型教室", "大型教室", "特大型教室"],
+        )
+
     def test_calls_model_and_returns_text_answer(self) -> None:
         response = SimpleNamespace(choices=[SimpleNamespace(
             message=SimpleNamespace(content="  模型答案  ")
@@ -123,12 +687,80 @@ class RagTest(unittest.TestCase):
             stream=False,
         )
 
+    def test_verifier_audits_only_evidence_cited_by_agent_claims(self) -> None:
+        top = {
+            "title": "双方签订合作协议",
+            "url": "https://example.test/first",
+            "content": "协议持续五年，重点加强学术合作、学生交换、教师互访。",
+        }
+        unrelated = {
+            "title": "双方续签第二期协议",
+            "url": "https://example.test/second",
+            "content": "第二期协议持续四年，重点推进教学与科研合作。",
+        }
+        top_id = Evidence.from_result(top).evidence_id
+        decision = json.dumps({
+            "action": "answer",
+            "answer": "协议持续五年，重点加强学术合作、学生交换、教师互访。",
+            "claims": [{
+                "statement": "协议持续五年并重点加强学术合作、学生交换、教师互访",
+                "evidence_ids": [top_id],
+            }],
+            "slots": [],
+        }, ensure_ascii=False)
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[decision, verification(evidence_ids=[top_id])],
+        ) as model:
+            response = agentic_rag_answer(
+                "合作协议计划持续多少年，重点加强哪些合作？",
+                lambda _query, _top_k: [top, unrelated],
+                debug=True,
+            )
+
+        verifier_prompt = model.call_args_list[1].args[0]
+        self.assertIn("协议持续五年", verifier_prompt)
+        self.assertNotIn("第二期协议持续四年", verifier_prompt)
+        self.assertEqual(response["answer"], "协议持续五年，重点加强学术合作、学生交换、教师互访。")
+        self.assertEqual(response["trace"][0]["verification_evidence_ids"], [top_id])
+
     def test_rejects_empty_prompt_and_missing_key(self) -> None:
         with self.assertRaisesRegex(ValueError, "prompt"):
             call_model("  ")
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, LLM_API_KEY_ENV):
                 call_model("问题")
+
+    def test_model_endpoint_can_be_overridden_from_environment(self) -> None:
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="模型答案")
+        )])
+        environment = {
+            LLM_API_KEY_ENV: "test-key",
+            LLM_BASE_URL_ENV: "https://llm.example.test/v1",
+            LLM_MODEL_ENV: "test-model",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("zeta_engine.rag.OpenAI") as openai,
+        ):
+            openai.return_value.chat.completions.create.return_value = response
+            call_model("问题")
+
+        openai.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://llm.example.test/v1",
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
+        self.assertEqual(
+            openai.return_value.chat.completions.create.call_args.kwargs["model"],
+            "test-model",
+        )
+        self.assertNotIn(
+            "extra_body",
+            openai.return_value.chat.completions.create.call_args.kwargs,
+        )
 
     def test_rejects_empty_model_answer(self) -> None:
         response = SimpleNamespace(choices=[SimpleNamespace(
@@ -172,6 +804,7 @@ class RagTest(unittest.TestCase):
         context = merge_results(results)
 
         self.assertIn("[文档1]", context)
+        self.assertIn("相关性优先级：1（数字越小越相关）", context)
         self.assertIn("标题：第一篇 vcr文档", context)
         self.assertIn("发布日期：2026-08-29", context)
         self.assertIn("内容：第一条 10月14日 证据", context)
@@ -186,6 +819,7 @@ class RagTest(unittest.TestCase):
         context = merge_results([{
             "url": "https://example.test/rules",
             "content": "申诉处理 十日内提交",
+            "heading_path": "学生管理 > 申诉处理",
             "structured_content": (
                 "<main><h2>申诉处理</h2><p>十日内提交</p></main>"
             ),
@@ -195,47 +829,58 @@ class RagTest(unittest.TestCase):
             "<main><h2>申诉处理</h2><p>十日内提交</p></main>",
             context,
         )
+        self.assertIn("章节：学生管理 > 申诉处理", context)
+
+    def test_model_context_keeps_raw_candidate_when_section_is_lossy(self) -> None:
+        context = merge_results([{
+            "url": "https://example.test/profile",
+            "content": "社会兼职：期刊审稿。",
+            "structured_content": "<section><h2>社会兼职</h2></section>",
+            "candidate_content": (
+                "教授课程：机器学习基础：2022-2024春。"
+                "社会兼职：期刊审稿。"
+            ),
+        }])
+
+        self.assertIn("机器学习基础:2022-2024春", context)
 
     def test_builds_grounded_prompt(self) -> None:
         prompt = build_prompt("申请条件是什么？", "[文档1]\n内容：申请条件")
 
         self.assertIn("问题：申请条件是什么？", prompt)
         self.assertIn("[文档1]\n内容：申请条件", prompt)
-        self.assertIn("不可信数据", prompt)
-        self.assertIn("材料不足", prompt)
+        self.assertIn("优先给出有用答案", prompt)
         self.assertIn("只输出最终答案", prompt)
-        self.assertIn("不要输出思考过程", prompt)
-        self.assertIn("引用标签或其他多余内容", prompt)
-        self.assertIn("派生结论", prompt)
-        self.assertIn("存在冲突", prompt)
-        self.assertIn("每个人名、编号或项目名都是一个可计数项", prompt)
+        self.assertIn("不输出思考过程", prompt)
+        self.assertIn("不要求答案必须在原文中逐字出现", prompt)
 
         cited_prompt = build_prompt(
             "申请条件是什么？",
             "[文档1]\n内容：申请条件",
             include_citations=True,
         )
-        self.assertIn("使用证据ID标注依据", cited_prompt)
+        self.assertIn("用证据ID标注依据", cited_prompt)
 
         agent_prompt = build_agent_prompt(
-            "三年夏令营人数分别是多少？",
-            "[文档1]\n内容：2019年名单：张三、李四",
-            ["三年夏令营人数分别是多少？"],
+            "三个年度的成员数量分别是多少？",
+            "[文档1]\n内容：第一年成员：甲、乙",
+            ["三个年度的成员数量分别是多少？"],
             remaining_cycles=2,
         )
         verifier_prompt = build_verifier_prompt(
-            "三年夏令营人数分别是多少？",
-            "[文档1]\n内容：2019年名单：张三、李四",
-            "2019年2人",
+            "三个年度的成员数量分别是多少？",
+            "[文档1]\n内容：第一年成员：甲、乙",
+            "第一年2人",
         )
-        for counting_prompt in (agent_prompt, verifier_prompt):
-            self.assertIn("每个人名、编号或项目名都是一个可计数项", counting_prompt)
-            self.assertIn("不同年份或群体分别计算", counting_prompt)
-            self.assertIn("拟推荐名单不能作为参营人数的证据", counting_prompt)
-            self.assertIn("必须保留并计算范围内所有独立记录", counting_prompt)
-        self.assertIn("intersection|union|difference|complement", agent_prompt)
-        self.assertIn("不得用 count_unique 代替集合运算", agent_prompt)
-        self.assertIn("count_unique 只能计数或去重", verifier_prompt)
+        self.assertIn("优先 answer", agent_prompt)
+        self.assertIn("只有核心信息完全缺失时才 search", agent_prompt)
+        self.assertIn("claims 和 slots 可以为空", agent_prompt)
+        self.assertIn("不要因为材料不完整", verifier_prompt)
+        self.assertIn("与检索材料明显矛盾", verifier_prompt)
+        for leaked_rule in ("不少于N", "比例≥N/D", "目标子集合", "流程阶段"):
+            self.assertNotIn(leaked_rule, prompt)
+            self.assertNotIn(leaked_rule, agent_prompt)
+            self.assertNotIn(leaked_rule, verifier_prompt)
 
     def test_agentic_rag_answers_without_follow_up(self) -> None:
         results = [{
@@ -262,6 +907,62 @@ class RagTest(unittest.TestCase):
         self.assertEqual(model.call_count, 2)
         self.assertTrue(model.call_args_list[0].kwargs["json_output"])
         self.assertTrue(model.call_args_list[1].kwargs["json_output"])
+
+    def test_agentic_rag_runs_collection_and_ratio_inside_one_loop(self) -> None:
+        initial = {
+            "title": "夏令营公告",
+            "url": "https://example.test/camp",
+            "content": "拟推荐优秀营员不少于34人。",
+        }
+        tool_result = {
+            "title": "夏令营公告 · 学术硕士营员名单",
+            "url": "https://example.test/camp",
+            "content": "确定性工具完整扫描学术硕士营员名单，共127人；拟推荐不少于34人。",
+            "passage_id": "collection-table:1:1",
+        }
+        tool_evidence_id = Evidence.from_result(tool_result).evidence_id
+        calculation = json.dumps({
+            "action": "calculate",
+            "calculations": [{
+                "name": "最低录取比",
+                "operator": "ratio",
+                "items": [
+                    {"value": 34, "evidence_ids": [tool_evidence_id]},
+                    {"value": 127, "evidence_ids": [tool_evidence_id]},
+                ],
+            }],
+            "slots": [],
+        }, ensure_ascii=False)
+        collection_calls = []
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                json.dumps({
+                    "action": "collection",
+                    "query": "完整扫描学术硕士营员名单并计算最低录取比",
+                    "slots": [],
+                }, ensure_ascii=False),
+                calculation,
+                '{"action":"answer","answer":"最低录取比至少约为26.77%"}',
+                verification(calculation_ids=["最低录取比"]),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "夏令营学硕最低录取比是多少？",
+                lambda _query, _top_k: [initial],
+                collection_fn=lambda tool_query: (
+                    collection_calls.append(tool_query) or [tool_result]
+                ),
+                debug=True,
+            )
+
+        self.assertEqual(response["answer"], "最低录取比至少约为26.77%")
+        self.assertEqual(len(collection_calls), 1)
+        self.assertEqual(
+            [item["action"] for item in response["trace"]],
+            ["collection", "calculate", "verified_answer"],
+        )
 
     def test_shared_answer_across_years_skips_requirement_planning(self) -> None:
         results = [{
@@ -453,8 +1154,8 @@ class RagTest(unittest.TestCase):
         self.assertEqual(searches, ["连续三年春季课程?", "许洪腾 教授课程"])
         self.assertEqual(response["answer"], "机器学习")
         self.assertEqual(len(response["results"]), 2)
-        self.assertIn("每项要求都有直接证据", model.call_args_list[0].args[0])
-        self.assertIn("冲突", model.call_args_list[0].args[0])
+        self.assertIn("优先 answer", model.call_args_list[0].args[0])
+        self.assertIn("核心信息完全缺失", model.call_args_list[0].args[0])
         self.assertIn("教育经历", model.call_args_list[1].args[0])
         self.assertIn("2024春", model.call_args_list[1].args[0])
 
@@ -481,7 +1182,7 @@ class RagTest(unittest.TestCase):
 
         self.assertEqual(response["answer"], "共60人")
         self.assertEqual(searches, ["2024年人数是多少?", "2024 完整名单"])
-        self.assertIn("集合信息足以支持聚合", model.call_args_list[0].args[0])
+        self.assertIn("继续检索", model.call_args_list[0].args[0])
 
     def test_agentic_rag_can_search_multiple_cycles(self) -> None:
         searches: list[str] = []
@@ -523,6 +1224,88 @@ class RagTest(unittest.TestCase):
         self.assertEqual(trace[1]["evidence_count"], 2)
         self.assertEqual(trace[2]["action"], "verified_answer")
         self.assertEqual(trace[2]["answer"], "综合答案")
+
+    def test_agentic_rag_tracks_slots_across_search_cycles(self) -> None:
+        first_result = {
+            "url": "https://example.test/a",
+            "content": "甲参加项目一",
+        }
+        second_result = {
+            "url": "https://example.test/b",
+            "content": "乙参加项目二",
+        }
+        first_id = Evidence.from_result(first_result).evidence_id
+        second_id = Evidence.from_result(second_result).evidence_id
+
+        def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
+            return [second_result] if query == "乙 项目名单" else [first_result]
+
+        with patch(
+            "zeta_engine.rag.call_model",
+            side_effect=[
+                json.dumps({
+                    "action": "search",
+                    "slots": [
+                        {
+                            "id": "a",
+                            "question": "甲参加的项目",
+                            "status": "answered",
+                            "evidence_ids": [first_id],
+                        },
+                        {
+                            "id": "b",
+                            "question": "乙参加的项目",
+                            "status": "missing",
+                            "evidence_ids": [],
+                        },
+                    ],
+                    "queries": [{"slot_id": "b", "query": "乙 项目名单"}],
+                }, ensure_ascii=False),
+                json.dumps({
+                    "action": "answer",
+                    "answer": "甲参加项目一，乙参加项目二",
+                    "slots": [
+                        {
+                            "id": "a",
+                            "question": "甲参加的项目",
+                            "status": "answered",
+                            "evidence_ids": [first_id],
+                        },
+                        {
+                            "id": "b",
+                            "question": "乙参加的项目",
+                            "status": "answered",
+                            "evidence_ids": [second_id],
+                        },
+                    ],
+                    "claims": [],
+                }, ensure_ascii=False),
+                verification(evidence_ids=[first_id, second_id]),
+            ],
+        ):
+            response = agentic_rag_answer(
+                "甲和乙分别参加什么项目？",
+                search_fn,
+                max_cycles=2,
+                debug=True,
+            )
+
+        self.assertEqual(
+            response["trace"][0]["query_slots"],
+            {"乙 项目名单": "b"},
+        )
+        self.assertEqual(
+            [slot["status"] for slot in response["trace"][0]["answer_slots"]],
+            ["answered", "missing"],
+        )
+        self.assertEqual(
+            [slot["id"] for slot in response["answer_slots"]],
+            ["a", "b"],
+        )
+        self.assertEqual(
+            [slot["status"] for slot in response["answer_slots"]],
+            ["answered", "answered"],
+        )
 
     def test_agentic_rag_keeps_new_evidence_when_pool_is_full(self) -> None:
         def search_fn(query: str, _top_k: int) -> list[dict[str, str]]:
@@ -1041,7 +1824,7 @@ class RagTest(unittest.TestCase):
         self.assertEqual(len(response["claims"]), 2)
         model.assert_not_called()
 
-    def test_single_explicit_year_scopes_initial_evidence(self) -> None:
+    def test_single_explicit_year_does_not_drop_other_evidence(self) -> None:
         results = [
             {
                 "title": "林老师入选2024年度人才计划",
@@ -1056,8 +1839,6 @@ class RagTest(unittest.TestCase):
                 "content": "2025年度入选教师是王老师",
             },
         ]
-        excluded_id = Evidence.from_result(results[1]).evidence_id
-
         with patch(
             "zeta_engine.rag.call_model",
             side_effect=[
@@ -1073,11 +1854,8 @@ class RagTest(unittest.TestCase):
 
         initial_prompt = model.call_args_list[0].args[0]
         self.assertIn("2024年度入选教师是林老师", initial_prompt)
-        self.assertNotIn("2025年度入选教师是王老师", initial_prompt)
-        self.assertEqual(
-            response["trace"][0]["scope_excluded_evidence_ids"],
-            [excluded_id],
-        )
+        self.assertIn("2025年度入选教师是王老师", initial_prompt)
+        self.assertNotIn("scope_excluded_evidence_ids", response["trace"][0])
 
     def test_temporal_sorting_stops_after_grounded_format_revision(self) -> None:
         results = [
@@ -1297,18 +2075,21 @@ class RagTest(unittest.TestCase):
         for call in model.call_args_list:
             self.assertIn("2024年度入选教师是谁", call.args[0])
 
-    def test_compound_query_returns_material_shortage_only_when_all_missing(self) -> None:
-        with patch("zeta_engine.rag.call_model") as model:
+    def test_compound_query_still_answers_when_all_evidence_is_missing(self) -> None:
+        with patch(
+            "zeta_engine.rag.call_model",
+            return_value="甲和乙的具体信息无法确认。",
+        ) as model:
             response = agentic_rag_answer(
                 "甲和乙分别是什么？",
                 lambda _query, _top_k: [],
                 max_cycles=1,
             )
 
-        self.assertEqual(response["answer"], RAG_NO_RESULTS_ANSWER)
-        self.assertEqual(response["status"], "missing")
-        self.assertFalse(response["complete"])
-        model.assert_not_called()
+        self.assertEqual(response["answer"], "甲和乙的具体信息无法确认。")
+        self.assertEqual(response["status"], "answered")
+        self.assertTrue(response["complete"])
+        model.assert_called_once()
 
 
 if __name__ == "__main__":

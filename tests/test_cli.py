@@ -67,7 +67,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device=None,
-                alpha=.38,
+                alpha=.23,
             )
 
     def test_runs_rag_evaluation_from_cli(self) -> None:
@@ -99,8 +99,11 @@ class CliTest(unittest.TestCase):
                 index_db,
                 base_url=DEFAULT_BASE_URL,
                 dense_index=dense_index,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
                 device=None,
-                alpha=.38,
+                alpha=.23,
                 top_k=8,
             )
 
@@ -158,7 +161,10 @@ class CliTest(unittest.TestCase):
                 top_k=3,
                 dense_index=dense_index,
                 device="mps",
-                alpha=.38,
+                alpha=.23,
+                reranker_model=Path("models/bge-reranker-base"),
+                rerank_candidates=50,
+                reranker_batch_size=16,
                 max_cycles=6,
                 debug=True,
             )
@@ -176,6 +182,11 @@ class CliTest(unittest.TestCase):
                 "action": "search",
                 "search_queries": ["初始查询"],
                 "next_queries": ["补充查询"],
+                "query_slots": {"补充查询": "s2"},
+                "answer_slots": [
+                    {"id": "s1", "status": "answered"},
+                    {"id": "s2", "status": "missing"},
+                ],
                 "new_results": [{
                     "title": "证据标题",
                     "preview": "不应输出的长正文",
@@ -199,9 +210,31 @@ class CliTest(unittest.TestCase):
         self.assertIn("第 1 轮 · 继续检索", report)
         self.assertIn("新证据: 证据标题", report)
         self.assertIn("累计证据 3 条，上下文约 1200 tokens", report)
-        self.assertIn("下一步搜索: 补充查询", report)
+        self.assertIn("下一步搜索: 补充查询 [s2]", report)
+        self.assertIn("槽位状态: s1=answered | s2=missing", report)
         self.assertIn("校验问题: 缺少第二项证据", report)
         self.assertNotIn("不应输出的长正文", report)
+
+    def test_formats_collection_rag_debug(self) -> None:
+        report = format_rag_debug({
+            "status": "answered",
+            "requirements": [],
+            "collection_trace": {
+                "filter": {
+                    "field": "负责人",
+                    "operator": "contains",
+                    "value": "张三",
+                },
+                "counts": {"2025": 1, "2026": 2},
+                "topic_mode": "semantic",
+                "topics": [{"label": "智能检索"}],
+            },
+        })
+
+        self.assertIn("集合过滤: 负责人 contains 张三", report)
+        self.assertIn("确定性计数: 2025=1，2026=2", report)
+        self.assertIn("共同主题 (semantic): 智能检索", report)
+        self.assertNotIn("没有 trace", report)
 
     def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -279,7 +312,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device="mps",
-                alpha=.38,
+                alpha=.23,
             )
             self.assertIn("dense 结果", output.getvalue())
             self.assertIn("最佳分块10", output.getvalue())
@@ -303,7 +336,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 device="mps",
-                alpha=.38,
+                alpha=.23,
             )
 
             index_db = root / "index.db"
@@ -366,7 +399,7 @@ class CliTest(unittest.TestCase):
                 rerank_candidates=40,
                 reranker_batch_size=8,
                 device="mps",
-                alpha=.38,
+                alpha=.23,
             )
 
     def test_builds_search_index_and_reports_term_count(self) -> None:

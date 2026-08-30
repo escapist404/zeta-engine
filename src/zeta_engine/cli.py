@@ -10,6 +10,7 @@ from zeta_engine.dense import (
     DEFAULT_INDEX_DIR,
     DEFAULT_MODEL_PATH,
     build_dense_index,
+    upgrade_dense_index_v3,
 )
 from zeta_engine.eval import DEFAULT_BASE_URL, run_evaluation, run_rag_evaluation
 from zeta_engine.index import build_index
@@ -129,18 +130,21 @@ def run_indexer(args: argparse.Namespace) -> int:
 def run_dense_indexer(args: argparse.Namespace) -> int:
     if not args.document_db.is_file():
         raise SystemExit(f"数据库不存在: {args.document_db}")
-    if not args.model.is_dir():
+    if not args.upgrade_v3 and not args.model.is_dir():
         raise SystemExit(f"Dense 模型目录不存在: {args.model}")
 
     configure_logging(args.log_file)
     with Storage(document_db=args.document_db) as storage:
-        stats = build_dense_index(
-            storage,
-            args.dense_index,
-            model_path=args.model,
-            batch_size=args.batch_size,
-            device=args.device,
-        )
+        if args.upgrade_v3:
+            stats = upgrade_dense_index_v3(storage, args.dense_index)
+        else:
+            stats = build_dense_index(
+                storage,
+                args.dense_index,
+                model_path=args.model,
+                batch_size=args.batch_size,
+                device=args.device,
+            )
     logging.info("Dense 索引完成: %s", stats)
     return 0
 
@@ -222,6 +226,36 @@ def format_rag_debug(response: dict[str, object]) -> str:
             marker = "✓" if item.get("status") == "answered" else "✗"
             lines.append(f"  {marker} {item.get('question', '未命名槽位')}")
 
+    collection_trace = response.get("collection_trace")
+    if isinstance(collection_trace, dict):
+        filter_spec = collection_trace.get("filter", {})
+        counts = collection_trace.get("counts", {})
+        topics = collection_trace.get("topics", [])
+        if isinstance(filter_spec, dict):
+            lines.append(
+                "集合过滤: "
+                f"{filter_spec.get('field', '?')} "
+                f"{filter_spec.get('operator', '?')} "
+                f"{filter_spec.get('value', '?')}"
+            )
+        if isinstance(counts, dict):
+            lines.append(
+                "确定性计数: "
+                + "，".join(f"{key}={value}" for key, value in counts.items())
+            )
+        if isinstance(topics, list):
+            labels = [
+                str(topic.get("label"))
+                for topic in topics
+                if isinstance(topic, dict) and topic.get("label")
+            ]
+            if labels:
+                lines.append(
+                    f"共同主题 ({collection_trace.get('topic_mode', 'unknown')}): "
+                    + "、".join(labels)
+                )
+        return "\n".join(lines)
+
     trace = response.get("trace", [])
     if not isinstance(trace, list) or not trace:
         lines.append("没有 trace。")
@@ -260,7 +294,28 @@ def format_rag_debug(response: dict[str, object]) -> str:
 
         next_queries = item.get("next_queries", [])
         if isinstance(next_queries, list) and next_queries:
-            lines.append("  下一步搜索: " + " | ".join(map(str, next_queries)))
+            query_slots = item.get("query_slots", {})
+            if not isinstance(query_slots, dict):
+                query_slots = {}
+            formatted_queries = [
+                (
+                    f"{query} [{query_slots[str(query)]}]"
+                    if query_slots.get(str(query))
+                    else str(query)
+                )
+                for query in next_queries
+            ]
+            lines.append("  下一步搜索: " + " | ".join(formatted_queries))
+
+        answer_slots = item.get("answer_slots", [])
+        if isinstance(answer_slots, list) and answer_slots:
+            slot_states = [
+                f"{slot.get('id', '?')}={slot.get('status', 'unknown')}"
+                for slot in answer_slots
+                if isinstance(slot, dict)
+            ]
+            if slot_states:
+                lines.append("  槽位状态: " + " | ".join(slot_states))
 
         calculations = item.get("calculations", [])
         if isinstance(calculations, list):
@@ -317,10 +372,16 @@ def run_rag(args: argparse.Namespace) -> int:
         raise SystemExit(f"数据库不存在: {args.index_db}")
     if not (args.dense_index / "metadata.json").is_file():
         raise SystemExit(f"Dense 索引不存在: {args.dense_index}")
+    if not args.reranker_model.is_dir():
+        raise SystemExit(f"Reranker 模型目录不存在: {args.reranker_model}")
     if not 0. <= args.alpha <= 1.:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
     if args.top_k <= 0:
         raise SystemExit("--top-k 必须大于 0")
+    if args.rerank_candidates <= 0:
+        raise SystemExit("--rerank-candidates 必须大于 0")
+    if args.reranker_batch_size <= 0:
+        raise SystemExit("--reranker-batch-size 必须大于 0")
     if not 1 <= args.max_cycles <= 8:
         raise SystemExit("--max-cycles 必须在 1 到 8 之间")
 
@@ -333,6 +394,9 @@ def run_rag(args: argparse.Namespace) -> int:
             dense_index=args.dense_index,
             device=args.device,
             alpha=args.alpha,
+            reranker_model=args.reranker_model,
+            rerank_candidates=args.rerank_candidates,
+            reranker_batch_size=args.reranker_batch_size,
             max_cycles=args.max_cycles,
             debug=args.debug,
         )
@@ -388,14 +452,13 @@ def run_evaluator(args: argparse.Namespace) -> int:
     ):
         raise SystemExit(f"Dense 索引不存在: {args.dense_index}")
     if (
-        not is_rag
-        and args.ranking == "rerank"
+        (is_rag or args.ranking == "rerank")
         and not args.reranker_model.is_dir()
     ):
         raise SystemExit(f"Reranker 模型目录不存在: {args.reranker_model}")
-    if not is_rag and args.rerank_candidates <= 0:
+    if args.rerank_candidates <= 0:
         raise SystemExit("--rerank-candidates 必须大于 0")
-    if not is_rag and args.reranker_batch_size <= 0:
+    if args.reranker_batch_size <= 0:
         raise SystemExit("--reranker-batch-size 必须大于 0")
     if not 0. <= args.alpha <= 1.:
         raise SystemExit("--alpha 需要在 0 到 1 之间")
@@ -409,6 +472,9 @@ def run_evaluator(args: argparse.Namespace) -> int:
     }
     if is_rag:
         kwargs["top_k"] = args.top_k
+        kwargs["reranker_model"] = args.reranker_model
+        kwargs["rerank_candidates"] = args.rerank_candidates
+        kwargs["reranker_batch_size"] = args.reranker_batch_size
         evaluator = run_rag_evaluation
     else:
         kwargs.update({
@@ -519,6 +585,11 @@ def build_parser() -> argparse.ArgumentParser:
     dense_index.add_argument("--batch-size", type=int, default=32)
     dense_index.add_argument("--device")
     dense_index.add_argument(
+        "--upgrade-v3",
+        action="store_true",
+        help="复用现有 v3 向量，只新增 passage 元数据和 BM25 索引",
+    )
+    dense_index.add_argument(
         "--log-file",
         type=Path,
         default=Path("logs/zeta-engine.log"),
@@ -571,7 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rag = commands.add_parser("rag", help="检索并生成回答")
     rag.add_argument("query", help="问题文本")
-    rag.add_argument("--top-k", type=int, default=5)
+    rag.add_argument("--top-k", type=int, default=8)
     rag.add_argument("--max-cycles", type=int, default=AGENT_MAX_CYCLES)
     rag.add_argument("--debug", action="store_true")
     rag.add_argument(
@@ -591,6 +662,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rag.add_argument("--device")
     rag.add_argument("--alpha", type=float, default=DEFAULT_HYBRID_ALPHA)
+    rag.add_argument(
+        "--reranker-model",
+        type=Path,
+        default=DEFAULT_RERANKER_MODEL_PATH,
+    )
+    rag.add_argument(
+        "--rerank-candidates",
+        type=int,
+        default=DEFAULT_RERANK_CANDIDATES,
+    )
+    rag.add_argument(
+        "--reranker-batch-size",
+        type=int,
+        default=DEFAULT_RERANK_BATCH_SIZE,
+    )
     rag.set_defaults(handler=run_rag)
 
     server = commands.add_parser("serve", help="启动 Web 搜索服务")
@@ -663,7 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_INDEX_DIR,
     )
     evaluation.add_argument("--device")
-    evaluation.add_argument("--top-k", type=int, default=5)
+    evaluation.add_argument("--top-k", type=int, default=8)
     evaluation.add_argument("--alpha", type=float, default=DEFAULT_HYBRID_ALPHA)
     evaluation.add_argument(
         "--reranker-model",

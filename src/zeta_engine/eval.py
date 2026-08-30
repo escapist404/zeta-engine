@@ -24,6 +24,8 @@ from zeta_engine.service import answer_question
 from zeta_engine.storage import Storage
 
 DEFAULT_BASE_URL = "http://10.47.253.18:8080/"
+_TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})
+_EVAL_REQUEST_ATTEMPTS = 4
 
 
 def input_idx() -> str:
@@ -48,6 +50,30 @@ def _parse_response(response: requests.Response) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("评测服务器返回的数据不是字典")
     return data
+
+
+def _post_with_retry(
+    url: str,
+    *,
+    data: dict[str, str],
+    timeout: int,
+) -> requests.Response:
+    """Retry only transient transport and gateway failures."""
+
+    for attempt in range(_EVAL_REQUEST_ATTEMPTS):
+        try:
+            response = requests.post(url, data=data, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == _EVAL_REQUEST_ATTEMPTS - 1:
+                raise
+        else:
+            if (
+                response.status_code not in _TRANSIENT_STATUS_CODES
+                or attempt == _EVAL_REQUEST_ATTEMPTS - 1
+            ):
+                return response
+        time.sleep(0.5 * (2 ** attempt))
+    raise RuntimeError("评测请求重试状态异常")
 
 
 def login(base_url: str, idx: str, passwd: str) -> list[str]:
@@ -118,7 +144,7 @@ def send_answers(
 
 
 def rag_login(base_url: str, idx: str, passwd: str) -> list[str]:
-    response = requests.post(
+    response = _post_with_retry(
         urljoin(base_url.rstrip("/") + "/", "rag/login"),
         data={"idx": idx, "passwd": passwd},
         timeout=15,
@@ -145,7 +171,7 @@ def send_rag_answers(
     answers: list[str],
     elapsed_seconds: list[float],
 ) -> tuple[str, float, list[float], float, list[dict[str, Any]]]:
-    response = requests.post(
+    response = _post_with_retry(
         urljoin(base_url.rstrip("/") + "/", "rag/score"),
         data={
             "idx": idx,
@@ -314,9 +340,12 @@ def run_rag_evaluation(
     *,
     base_url: str = DEFAULT_BASE_URL,
     dense_index: str | Path = DEFAULT_INDEX_DIR,
+    reranker_model: str | Path = DEFAULT_RERANKER_MODEL_PATH,
+    rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
+    reranker_batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
     device: str | None = None,
     alpha: float = DEFAULT_HYBRID_ALPHA,
-    top_k: int = 5,
+    top_k: int = 8,
 ) -> None:
     idx = input_idx()
     passwd = input_passwd()
@@ -337,6 +366,9 @@ def run_rag_evaluation(
                 query,
                 top_k=top_k,
                 dense_index=dense_index,
+                reranker_model=reranker_model,
+                rerank_candidates=rerank_candidates,
+                reranker_batch_size=reranker_batch_size,
                 device=device,
                 alpha=alpha,
             )

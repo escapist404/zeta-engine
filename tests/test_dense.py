@@ -82,6 +82,7 @@ def write_index(
     with (directory / "chunks.jsonl").open("w", encoding="utf-8") as file:
         for record in records:
             file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    dense._build_passage_sparse_index(directory / "passages.db", records)
     (directory / "metadata.json").write_text(
         json.dumps({
             "schema_version": dense.SCHEMA_VERSION,
@@ -92,6 +93,8 @@ def write_index(
             "chunk_count": len(records) if chunk_count is None else chunk_count,
             "vector_file": "vectors.npy",
             "chunk_file": "chunks.jsonl",
+            "passage_index_file": "passages.db",
+            "passage_tokenizer_mode": "search",
         }),
         encoding="utf-8",
     )
@@ -182,6 +185,114 @@ class DenseTest(unittest.TestCase):
             self.assertEqual(metadata["dimension"], 512)
             self.assertTrue((index_dir / metadata["vector_file"]).is_file())
             self.assertTrue((index_dir / metadata["chunk_file"]).is_file())
+            self.assertTrue(
+                (index_dir / metadata["passage_index_file"]).is_file()
+            )
+
+    def test_searches_individual_dense_and_sparse_passages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            index_dir = Path(directory)
+            vectors = np.zeros((3, dense.EMBEDDING_DIMENSION), dtype=np.float32)
+            vectors[0, 0] = 1.0
+            vectors[1, 0] = 1.0
+            vectors[2, 1] = 1.0
+            records = [
+                {
+                    "document_id": 1,
+                    "chunk_index": 0,
+                    "title": "甲文档",
+                    "text": "普通内容",
+                },
+                {
+                    "document_id": 1,
+                    "chunk_index": 1,
+                    "title": "甲文档",
+                    "text": "目标证据",
+                },
+                {
+                    "document_id": 2,
+                    "chunk_index": 0,
+                    "title": "乙文档",
+                    "text": "其他材料",
+                },
+            ]
+            write_index(index_dir, vectors, records)
+
+            with patch("zeta_engine.dense._load_model", return_value=FakeModel()):
+                dense_hits = dense.search_dense_passages("甲", index_dir, limit=2)
+            sparse_hits = dense.search_sparse_passages(
+                "目标证据",
+                index_dir,
+                limit=2,
+            )
+
+            self.assertEqual(
+                [(hit.document_id, hit.chunk_index) for hit in dense_hits],
+                [(1, 0), (1, 1)],
+            )
+            self.assertEqual(sparse_hits[0].passage_id, "1:1")
+            self.assertEqual(sparse_hits[0].text, "目标证据")
+
+    def test_upgrades_v3_index_without_reencoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document_db = root / "documents.db"
+            index_dir = root / "dense"
+            index_dir.mkdir()
+            vector = np.zeros((1, dense.EMBEDDING_DIMENSION), dtype=np.float32)
+            vector[0, 0] = 1.0
+            np.save(index_dir / "vectors.npy", vector, allow_pickle=False)
+            (index_dir / "chunks.jsonl").write_text(
+                json.dumps({
+                    "document_id": 1,
+                    "chunk_index": 0,
+                    "text": "目标证据",
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (index_dir / "metadata.json").write_text(json.dumps({
+                "schema_version": 3,
+                "model_path": "models/fake",
+                "query_instruction": dense.QUERY_INSTRUCTION,
+                "dimension": dense.EMBEDDING_DIMENSION,
+                "normalized": True,
+                "document_count": 1,
+                "chunk_count": 1,
+                "vector_file": "vectors.npy",
+                "chunk_file": "chunks.jsonl",
+            }), encoding="utf-8")
+
+            with Storage(document_db=document_db) as storage:
+                assert storage.documents is not None
+                storage.documents.save(
+                    url="https://example.test/",
+                    title="目标标题",
+                    text="目标证据",
+                    fetched_at="2026-08-29T10:00:00",
+                )
+                stats = dense.upgrade_dense_index_v3(storage, index_dir)
+
+            metadata = json.loads(
+                (index_dir / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stats, {"documents": 1, "chunks": 1})
+            self.assertEqual(metadata["schema_version"], dense.SCHEMA_VERSION)
+            self.assertTrue(
+                (index_dir / metadata["passage_index_file"]).is_file()
+            )
+            self.assertEqual(
+                dense.search_sparse_passages("目标证据", index_dir)[0].title,
+                "目标标题",
+            )
+
+            first_metadata = metadata
+            with Storage(document_db=document_db) as storage:
+                repeated_stats = dense.upgrade_dense_index_v3(storage, index_dir)
+            repeated_metadata = json.loads(
+                (index_dir / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(repeated_stats, stats)
+            self.assertEqual(repeated_metadata, first_metadata)
 
     def test_searches_best_chunks_and_deduplicates_documents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

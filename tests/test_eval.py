@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from zeta_engine.dense import DenseHit
 from zeta_engine.eval import (
     DEFAULT_BASE_URL,
+    _post_with_retry,
     evaluate,
     run_evaluation,
     run_rag_evaluation,
@@ -19,6 +20,26 @@ from zeta_engine.storage import Storage
 
 
 class EvalTest(unittest.TestCase):
+    def test_rag_request_retries_transient_gateway_failure(self) -> None:
+        gateway_failure = Mock(status_code=502)
+        success = Mock(status_code=200)
+        with (
+            patch(
+                "zeta_engine.eval.requests.post",
+                side_effect=[gateway_failure, success],
+            ) as post,
+            patch("zeta_engine.eval.time.sleep") as sleep,
+        ):
+            response = _post_with_retry(
+                "http://example.test/rag/login",
+                data={"idx": "student", "passwd": ""},
+                timeout=15,
+            )
+
+        self.assertIs(response, success)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
     def test_send_answers_reads_debug_details(self) -> None:
         response = Mock()
         response.text = repr({
@@ -127,8 +148,11 @@ class EvalTest(unittest.TestCase):
             "问题",
             top_k=7,
             dense_index=Path("data/dense"),
+            reranker_model=Path("models/bge-reranker-base"),
+            rerank_candidates=50,
+            reranker_batch_size=16,
             device=None,
-            alpha=.38,
+            alpha=.23,
         )
         warmup.assert_called_once_with(Path("data/dense"), device=None)
         self.assertEqual(calls, ["idx", "bge", "login"])

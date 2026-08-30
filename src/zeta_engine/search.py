@@ -1,13 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from math import log
+from math import log, log1p
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 import numpy as np
 
-from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense
+from zeta_engine.dense import (
+    DEFAULT_INDEX_DIR,
+    PassageHit,
+    search_dense,
+    search_dense_passages,
+    search_sparse_passages,
+)
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
     text_normalize,
@@ -17,10 +23,12 @@ from zeta_engine.tokenizer import (
 DEFAULT_RERANKER_MODEL_PATH = Path("models/bge-reranker-base")
 DEFAULT_RERANK_CANDIDATES = 50
 DEFAULT_RERANK_BATCH_SIZE = 16
-DEFAULT_HYBRID_ALPHA = .38
+DEFAULT_HYBRID_ALPHA = .23
 RERANK_MAX_TOKENS = 512
 RERANK_TITLE_MAX_TOKENS = 64
 RERANK_OVERLAP_TOKENS = 64
+RERANK_SATURATION_THRESHOLD = .99
+RERANK_LOGIT_PLATEAU_MARGIN = .2
 
 _RERANK_LOCK = Lock()
 
@@ -310,6 +318,78 @@ def search_hybrid(
     return document_ids
 
 
+def search_hybrid_passages(
+    query: str,
+    dense_index: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    limit: int = 100,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
+    device: str | None = None,
+) -> list[PassageHit]:
+    """Fuse BM25 and embedding scores over the same canonical passages."""
+
+    if not 0. <= alpha <= 1.:
+        raise ValueError("alpha 必须在 0 到 1 之间")
+    if limit <= 0:
+        return []
+
+    candidate_limit = max(100, limit * 5)
+    if alpha == 0.:
+        return search_sparse_passages(query, dense_index, limit=limit)
+    if alpha == 1.:
+        return search_dense_passages(
+            query,
+            dense_index,
+            limit=limit,
+            device=device,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        dense_future = executor.submit(
+            search_dense_passages,
+            query,
+            dense_index,
+            limit=candidate_limit,
+            device=device,
+        )
+        sparse_hits = search_sparse_passages(
+            query,
+            dense_index,
+            limit=candidate_limit,
+        )
+        dense_hits = dense_future.result()
+
+    def key(hit: PassageHit) -> tuple[int, int]:
+        return hit.document_id, hit.chunk_index
+
+    sparse_scores = {key(hit): hit.score for hit in sparse_hits}
+    dense_scores = {key(hit): hit.score for hit in dense_hits}
+    sparse_normalized = _normalize_scores(sparse_scores)
+    dense_normalized = _normalize_scores(dense_scores)
+    scores = {
+        passage_key: (
+            (1. - alpha) * sparse_normalized.get(passage_key, 0.)
+            + alpha * dense_normalized.get(passage_key, 0.)
+        )
+        for passage_key in sparse_scores.keys() | dense_scores.keys()
+    }
+    passages = {
+        key(hit): hit
+        for hit in [*sparse_hits, *dense_hits]
+    }
+    ranked_keys = sorted(scores, key=lambda item: (-scores[item], item))[:limit]
+    return [
+        PassageHit(
+            document_id=passages[item].document_id,
+            chunk_index=passages[item].chunk_index,
+            score=scores[item],
+            text=passages[item].text,
+            title=passages[item].title,
+        )
+        for item in ranked_keys
+    ]
+
+
 @lru_cache(maxsize=2)
 def _load_cross_encoder(model_path: str, device: str | None):
     path = Path(model_path)
@@ -428,6 +508,52 @@ def _rerank_passages(
     return [best_passage]
 
 
+def _probability_logit(probability: float) -> float:
+    epsilon = 1e-7
+    probability = min(max(probability, epsilon), 1. - epsilon)
+    return log(probability) - log1p(-probability)
+
+
+def _sort_reranked_documents(
+    document_scores: dict[int, float],
+    candidate_order: dict[int, int],
+) -> list[int]:
+    """Keep Hybrid order within an indistinguishable saturated score plateau."""
+
+    ranked = sorted(
+        document_scores,
+        key=lambda document_id: (
+            -document_scores[document_id],
+            candidate_order[document_id],
+        ),
+    )
+    if not ranked:
+        return []
+
+    best_score = document_scores[ranked[0]]
+    if not RERANK_SATURATION_THRESHOLD <= best_score <= 1.:
+        return ranked
+
+    best_logit = _probability_logit(best_score)
+    plateau_size = 0
+    for document_id in ranked:
+        score = document_scores[document_id]
+        if not 0. <= score <= 1.:
+            break
+        if (
+            best_logit - _probability_logit(score)
+            > RERANK_LOGIT_PLATEAU_MARGIN
+        ):
+            break
+        plateau_size += 1
+
+    ranked[:plateau_size] = sorted(
+        ranked[:plateau_size],
+        key=candidate_order.__getitem__,
+    )
+    return ranked
+
+
 def search_reranked(
     storage: Storage,
     query: str,
@@ -495,10 +621,85 @@ def search_reranked(
         document_id: index
         for index, document_id in enumerate(candidates)
     }
-    return sorted(
+    return _sort_reranked_documents(
         document_scores,
-        key=lambda document_id: (
-            -document_scores[document_id],
-            candidate_order[document_id],
-        ),
+        candidate_order,
     )[:limit]
+
+
+def search_reranked_passages(
+    query: str,
+    dense_index: str | Path = DEFAULT_INDEX_DIR,
+    *,
+    reranker_model: str | Path = DEFAULT_RERANKER_MODEL_PATH,
+    limit: int = 10,
+    candidate_limit: int = DEFAULT_RERANK_CANDIDATES,
+    batch_size: int = DEFAULT_RERANK_BATCH_SIZE,
+    alpha: float = DEFAULT_HYBRID_ALPHA,
+    device: str | None = None,
+    max_passages_per_document: int = 3,
+) -> list[PassageHit]:
+    """Rerank canonical Hybrid passages without expanding them to documents."""
+
+    if limit <= 0:
+        return []
+    if candidate_limit <= 0:
+        raise ValueError("candidate_limit 必须大于 0")
+    if batch_size <= 0:
+        raise ValueError("batch_size 必须大于 0")
+    if max_passages_per_document <= 0:
+        raise ValueError("max_passages_per_document 必须大于 0")
+
+    query = text_normalize(query)
+    candidates = search_hybrid_passages(
+        query,
+        dense_index,
+        limit=max(limit, candidate_limit),
+        alpha=alpha,
+        device=device,
+    )
+    if not candidates:
+        return []
+
+    model = _load_cross_encoder(str(Path(reranker_model).resolve()), device)
+    pairs = [
+        (query, "\n".join(filter(None, (hit.title, hit.text))))
+        for hit in candidates
+    ]
+    with _RERANK_LOCK:
+        scores = np.asarray(model.predict(
+            pairs,
+            batch_size=batch_size,
+            show_progress_bar=False,
+        )).reshape(-1)
+    if len(scores) != len(candidates):
+        raise ValueError("Reranker 返回的分数数量不正确")
+
+    order = sorted(
+        range(len(candidates)),
+        key=lambda index: (-float(scores[index]), index),
+    )
+    selected = []
+    document_counts: dict[int, int] = {}
+    seen_texts = set()
+    for index in order:
+        hit = candidates[index]
+        if (
+            hit.text in seen_texts
+            or document_counts.get(hit.document_id, 0) >= max_passages_per_document
+        ):
+            continue
+        selected.append(PassageHit(
+            document_id=hit.document_id,
+            chunk_index=hit.chunk_index,
+            score=float(scores[index]),
+            text=hit.text,
+            title=hit.title,
+        ))
+        seen_texts.add(hit.text)
+        document_counts[hit.document_id] = (
+            document_counts.get(hit.document_id, 0) + 1
+        )
+        if len(selected) == limit:
+            break
+    return selected

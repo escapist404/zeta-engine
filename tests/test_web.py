@@ -43,10 +43,11 @@ class WebTest(unittest.TestCase):
                 with urlopen(base_url) as response:
                     frontend_html = response.read().decode()
                 self.assertIn("<span>ζ</span>engine", frontend_html)
-                self.assertIn('value="hybrid" selected', frontend_html)
-                self.assertIn('value="rag"', frontend_html)
+                self.assertIn('id="answer-offer"', frontend_html)
+                self.assertIn("ranking=rerank", frontend_html)
+                self.assertIn("ranking=rag", frontend_html)
                 self.assertIn('id="answer"', frontend_html)
-                self.assertIn('content: "「"', frontend_html)
+                self.assertIn('id="empty-state"', frontend_html)
 
                 with urlopen(
                     f"{base_url}/api/search?q={quote('中国人民大学')}&ranking=bm25f"
@@ -111,7 +112,7 @@ class WebTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     search_reranked.call_args.kwargs["alpha"],
-                    .38,
+                    .23,
                 )
 
                 rag_results = [{

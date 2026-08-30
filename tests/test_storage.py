@@ -68,6 +68,17 @@ class StorageTest(unittest.TestCase):
                     storage.documents.get(1),
                     ("https://a.test/", "新标题", "新正文", "2026-08-29"),
                 )
+                self.assertEqual(
+                    list(storage.documents.iter_all_with_content_html()),
+                    [(
+                        1,
+                        "https://a.test/",
+                        "新标题",
+                        "新正文",
+                        "2026-08-29",
+                        "<main><p>新正文</p></main>",
+                    )],
+                )
 
     def test_migrates_and_requeues_legacy_crawl_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

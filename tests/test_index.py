@@ -2,15 +2,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from zeta_engine.dense import DenseHit
+from zeta_engine.dense import DenseHit, PassageHit
 from zeta_engine.index import build_index
 from zeta_engine.search import (
     _fuse_scores,
+    _sort_reranked_documents,
     search_bm25f,
     search_hybrid,
+    search_hybrid_passages,
     search_hybrid_with_snippets,
     search_phrase,
     search_reranked,
+    search_reranked_passages,
 )
 from zeta_engine.storage import Storage
 from zeta_engine.tokenizer import (
@@ -46,6 +49,35 @@ class CharacterTokenizer:
 
 
 class IndexTest(unittest.TestCase):
+    def test_saturated_reranker_plateau_preserves_hybrid_order(self) -> None:
+        result = _sort_reranked_documents(
+            {
+                1: .999834,
+                2: .999848,
+                3: .999845,
+                4: .9,
+            },
+            {1: 0, 2: 1, 3: 2, 4: 3},
+        )
+
+        self.assertEqual(result, [1, 2, 3, 4])
+
+    def test_saturated_reranker_keeps_meaningful_score_order(self) -> None:
+        result = _sort_reranked_documents(
+            {1: .995, 2: .9998},
+            {1: 0, 2: 1},
+        )
+
+        self.assertEqual(result, [2, 1])
+
+    def test_unsaturated_reranker_uses_score_order(self) -> None:
+        result = _sort_reranked_documents(
+            {1: .79, 2: .8},
+            {1: 0, 2: 1},
+        )
+
+        self.assertEqual(result, [2, 1])
+
     def test_normalizes_compatibility_characters(self) -> None:
         self.assertEqual(
             text_normalize(" １０月１４日 ＶＣＲ  "),
@@ -94,6 +126,73 @@ class IndexTest(unittest.TestCase):
 
         self.assertEqual(document_ids, [1, 2])
         self.assertEqual(snippets, {2: "相关片段"})
+
+    def test_hybrid_fuses_scores_for_the_same_passage_identity(self) -> None:
+        sparse = [
+            PassageHit(1, 0, 2.0, "稀疏第一", "标题一"),
+            PassageHit(2, 0, 1.0, "稀疏第二", "标题二"),
+        ]
+        dense_hits = [
+            PassageHit(2, 0, .9, "稀疏第二", "标题二"),
+            PassageHit(3, 1, .5, "向量第三", "标题三"),
+        ]
+        with (
+            patch(
+                "zeta_engine.search.search_sparse_passages",
+                return_value=sparse,
+            ),
+            patch(
+                "zeta_engine.search.search_dense_passages",
+                return_value=dense_hits,
+            ),
+        ):
+            result = search_hybrid_passages(
+                "query",
+                Path("dense"),
+                limit=3,
+                alpha=.5,
+                device="cpu",
+            )
+
+        self.assertEqual(
+            [(hit.document_id, hit.chunk_index) for hit in result],
+            [(1, 0), (2, 0), (3, 1)],
+        )
+
+    def test_cross_encoder_reranks_exact_passages(self) -> None:
+        candidates = [
+            PassageHit(1, 0, .9, "第一段", "第一篇"),
+            PassageHit(1, 1, .8, "第二段", "第一篇"),
+            PassageHit(2, 0, .7, "真正证据", "第二篇"),
+        ]
+        model = Mock()
+        model.predict.return_value = [.1, .2, .9]
+        with (
+            patch(
+                "zeta_engine.search.search_hybrid_passages",
+                return_value=candidates,
+            ),
+            patch(
+                "zeta_engine.search._load_cross_encoder",
+                return_value=model,
+            ),
+        ):
+            result = search_reranked_passages(
+                "问题",
+                Path("dense"),
+                reranker_model=Path("reranker"),
+                limit=2,
+            )
+
+        self.assertEqual([hit.passage_id for hit in result], ["2:0", "1:1"])
+        self.assertEqual(
+            model.predict.call_args.args[0],
+            [
+                ("问题", "第一篇\n第一段"),
+                ("问题", "第一篇\n第二段"),
+                ("问题", "第二篇\n真正证据"),
+            ],
+        )
 
     def test_cross_encoder_reranks_hybrid_candidates(self) -> None:
         with Storage(document_db=":memory:") as storage:

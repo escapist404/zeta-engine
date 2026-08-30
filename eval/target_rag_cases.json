@@ -1,0 +1,50 @@
+{
+  "cases": [
+    {
+      "id": "summer-camp-room-buckets",
+      "query": "假设按夏令营人数规模安排场地：不满60人使用小型教室，60至100人使用中型教室，101至200人使用大型教室，超过200人使用特大型教室。2019、2020年和2021年高瓴人工智能学院优秀大学生夏令营分别应使用哪类教室？",
+      "expected_regex": [
+        "2019年[^；。]*小型教室",
+        "2020年[^；。]*中型教室",
+        "2021年[^；。]*特大型教室"
+      ]
+    },
+    {
+      "id": "teacher-course-semester",
+      "query": "根据许洪腾老师个人主页的“教授课程”栏目，哪一门课程在2022年至2024年连续三个春季学期开设？",
+      "expected_regex": ["机器学习基础"]
+    },
+    {
+      "id": "numbered-company-visits",
+      "query": "高瓴人工智能学院企业参访活动中，参访快手公司和腾讯公司一共多少次？",
+      "expected_regex": ["(?:一共|共|总计)4次"]
+    },
+    {
+      "id": "honoree-profile-undergraduate-course",
+      "query": "高瓴人工智能学院2024年度“北京市科技新星计划”报道中的入选教师，在其个人主页的“教授课程”栏目中列出了哪些本科生课程？",
+      "expected_regex": ["知识表示与学习"]
+    },
+    {
+      "id": "shared-course-attribute-join",
+      "query": "毛佳昕老师和苏冰老师个人主页共同列出的课程中，哪一门既安排在夏季学期，又属于本科生科研与实践环节？",
+      "expected_regex": ["人工智能综合设计"]
+    },
+    {
+      "id": "acl-cross-year-collection",
+      "query": "比较 ACL 2025 和 ACL 2026 论文汇总页：通讯作者包含窦志成的论文 分别有多少篇？哪些研究主题同时出现在两年中？",
+      "expected_regex": ["2025年[^；。]*10篇", "2026年[^；。]*14篇"],
+      "expected_collection": {
+        "counts": {"2025": 10, "2026": 14},
+        "minimum_shared_topics": 3
+      }
+    },
+    {
+      "id": "summer-camp-master-minimum-ratio",
+      "query": "2021年高瓴夏令营学硕最低录取比",
+      "expected_regex": [
+        "34\\s*/\\s*127",
+        "26\\.7[0-9]%"
+      ]
+    }
+  ]
+}

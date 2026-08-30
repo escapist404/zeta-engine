@@ -190,6 +190,19 @@ class _Document:
             """
         ))
 
+    def iter_all_with_content_html(
+        self,
+    ) -> Iterator[tuple[int, str, str, str, str, str]]:
+        """按文档 ID 顺序遍历文档及其结构化正文。"""
+
+        return iter(self._connection.execute(
+            """
+            SELECT id, url, title, text, fetched_at, content_html
+            FROM documents
+            ORDER BY id
+            """
+        ))
+
     def count_by_host(self, host: str) -> int:
         """统计指定主机下已保存的文档数量。"""
 

@@ -1,11 +1,24 @@
-# ζ-engine `(zeta-engine)`
+# ζ-engine
 
-ζ-engine 是一个面向中国人民大学相关站点的搜索引擎。
+ζ-engine是一个面向中国人民大学相关站点的中文搜索与 RAG 问答引擎。它能够抓取多个学院站点，保存清理后的正文与语义 HTML，并提供 BM25F、Dense、Hybrid、CrossEncoder 重排和多轮 RAG。
+
+## 主要能力
+
+- 带持久化队列、并发下载、失败重试和定期刷新的站点爬虫。
+- 按站点和页面类型选择正文容器，清理导航、侧栏、面包屑和页脚噪声。
+- 文档级 BM25F 检索和连续位置的精确短语检索。
+- 共享 passage 边界的 BM25 与 BGE Dense 索引，支持混合召回。
+- 使用 BGE CrossEncoder 对候选 passage 重排并按文档聚合。
+- 多轮 RAG：跟踪问题要求、补充检索、恢复语义结构、验证引用与答案完整性。
+- 针对名单、年份、分组计数和跨组交集问题的结构化集合处理。
+- 同时提供 CLI、Web 界面和 JSON API。
 
 ## 环境要求
 
-* python 3.13+
-* [uv](https://docs.astral.sh/uv/)
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/)
+- 数 GB 本地空间用于 embedding 和 reranker 模型
+- CPU，或支持 PyTorch 的 CUDA/MPS 设备
 
 ## 安装
 
@@ -15,15 +28,23 @@ cd zeta-engine
 uv sync
 ```
 
-## 使用
+查看可用命令：
 
-### 运行爬虫
+```bash
+uv run zeta-engine --help
+```
+
+## 快速开始
+
+### 1. 抓取站点
 
 ```bash
 uv run zeta-engine crawl
 ```
 
-常用参数：
+默认从 `src/zeta_engine/constants.py` 中的 `SEED_URLS` 开始，只跟踪 `ALLOWED_DOMAINS` 范围内的链接。文档、爬取队列和日志分别写入 `data/zeta.db`、`data/crawl_queue.db` 和 `logs/zeta-engine.log`。
+
+调整爬取规模和并发：
 
 ```bash
 uv run zeta-engine crawl \
@@ -32,173 +53,172 @@ uv run zeta-engine crawl \
   --delay 0.5
 ```
 
-重新抓取超过 24 小时的已完成页面，并重新尝试历史失败任务：
+重新抓取 24 小时前完成的页面，并重试历史失败任务：
 
 ```bash
 uv run zeta-engine crawl --refresh-after-hours 24 --retry-failed
 ```
 
-`--refresh-after-hours 0` 会重新抓取全部已完成页面。旧版队列没有完成时间，
-因此升级后第一次使用该参数时，历史已完成页面都会进入刷新队列。
+`--refresh-after-hours 0` 会刷新所有已完成页面。正文提取的通用选择器位于 `constants.py`，站点专用规则位于 `extraction_rules.py`。
 
-查看全部参数：
-
-```bash
-uv run zeta-engine crawl --help
-```
-
-### 构造索引
+### 2. 构建文档索引
 
 ```bash
-uv run zeta-engine index --mode default
-uv run zeta-engine index --mode search --log-file logs/zeta-engine.log
+uv run zeta-engine index --mode search
 ```
 
-索引开始、每处理 100 篇文档以及索引完成时都会输出日志。
+该命令使用 jieba 构建文档级倒排索引，默认写入 `data/index.db`。索引是增量的：文档内容和分词配置未变时会跳过已索引项。
 
-构造 BGE Dense 向量索引：
+### 3. 下载模型并构建 passage 索引
 
 ```bash
 uv run hf download BAAI/bge-small-zh-v1.5 \
   --local-dir models/bge-small-zh-v1.5 \
   --exclude "pytorch_model.bin"
-uv run zeta-engine dense-index --device mps
-```
 
-MPS 不可用时将 `--device mps` 改为 `--device cpu`。Dense 索引默认
-写入 `data/dense/`。
-
-如需使用 CrossEncoder 重排，另行下载本地 reranker 模型：
-
-```bash
 uv run hf download BAAI/bge-reranker-base \
   --local-dir models/bge-reranker-base
+
+uv run zeta-engine dense-index --device cpu
 ```
 
-### 查询
+`dense-index` 将文档切分为带重叠的 passage，一次性生成 Dense 向量、passage 元数据和 passage 级 BM25 索引，默认写入 `data/dense/`。
+
+Apple Silicon 可使用 `--device mps`，NVIDIA GPU 可使用相应 CUDA 设备。
+
+### 4. 搜索
 
 ```bash
 uv run zeta-engine search "中国人民大学"
-uv run zeta-engine search "中国人民大学" --phrase --limit 20
-uv run zeta-engine search "中国人民大学" --ranking bm25f
-uv run zeta-engine search "经济困难学生如何获得帮助" --ranking dense --device mps
-uv run zeta-engine search "经济困难学生如何获得帮助" --ranking hybrid --alpha 0.38 --device mps
-uv run zeta-engine search "经济困难学生如何获得帮助" --ranking rerank --device mps
+uv run zeta-engine search "经济困难学生如何获得帮助" --ranking rerank --device cpu
+uv run zeta-engine search "大学生创新创业" --phrase --limit 20
 ```
 
-`--ranking` 可选 `bm25f`、`dense`、`hybrid` 或 `rerank`，默认为 `hybrid`。
-Hybrid 将两路分数分别做
-min-max 归一化后线性融合；
-`--alpha 0` 等于 BM25F，`--alpha 1` 等于 Dense，默认为 `0.38`。
-`rerank` 默认将 Hybrid 的前 50 个候选切成重叠 passage，按 query 的连续字符
-匹配动态选出每篇文档最相关的 1–2 个 passage，再由 CrossEncoder 打分并以 MaxP
-聚合；可用
-`--rerank-candidates`、`--reranker-batch-size` 和 `--reranker-model` 调整。
-`--phrase` 要求词和位置连续匹配。
+`--ranking` 支持：
 
-### RAG 问答
+| 模式 | 说明 | 需要的数据 |
+|---|---|---|
+| `bm25f` | 文档级 BM25F，标题权重高于正文 | `zeta.db` + `index.db` |
+| `dense` | BGE passage 语义检索 | `zeta.db` + `data/dense/` |
+| `hybrid` | passage BM25 与 Dense 分数归一化后融合 | `zeta.db` + `data/dense/` |
+| `rerank` | Hybrid 召回后使用 CrossEncoder 重排 | Hybrid 数据 + reranker |
 
-设置 OpenAI 兼容服务的 API Key 后，使用检索结果生成回答：
+Hybrid 默认 `--alpha 0.23`；`0` 偏向稀疏检索，`1` 偏向 Dense 检索。`rerank` 默认重排 50 个候选，批大小为 16，可通过 `--rerank-candidates`、`--reranker-batch-size` 和 `--reranker-model` 调整。
+
+### 5. RAG 问答
+
+RAG 使用 DeepSeek API，当前模型配置为 `deepseek-v4-flash`。可以把 Key 放在
+`.env` 中，再导入当前 shell：
 
 ```bash
-export ZETA_LLM_API_KEY="你的 API Key"
-uv run zeta-engine rag "经济困难学生如何申请资助？" --device mps
+set -a
+source .env
+set +a
+uv run zeta-engine rag "经济困难学生如何申请资助？" --device cpu
 ```
 
-RAG 默认最多运行 3 轮：每轮观察累计证据后，由 Agent 决定直接回答或生成
-最多 3 个新查询；达到轮次上限时使用已有证据回答。CLI、Web 和评测统一使用
-Hybrid 检索，可调整轮次、Top-K 和融合权重：
+默认端点是 `https://api.deepseek.com`。如需切换其他 OpenAI-compatible 模型，
+可在 `.env` 中同时设置 `ZETA_LLM_BASE_URL` 和 `ZETA_LLM_MODEL`；无需修改 RAG 代码。
+
+RAG 默认最多运行 5 轮。每轮使用 Hybrid passage 召回与 CrossEncoder 重排，再尝试从已保存的语义 HTML 中恢复相邻正文或完整列表、表格和 section。Agent 会跟踪问题中未完成的要求，为其生成补充查询，并检查最终答案是否受现有证据支持。
+
+这里只有一套 Agentic RAG 闭环。`service.answer_question` 是应用入口，所有问题都进入
+`rag_engine` 的同一个 `Agent → 工具 → Verifier` 循环。Agent 可在循环中选择普通检索、
+完整集合扫描或确定性计算；`collection_rag` 只是完整名单/表格工具，不拥有第二套 system
+prompt，也不在闭环外预先路由问题。
 
 ```bash
-uv run zeta-engine rag "问题" --max-cycles 6 --top-k 8 --alpha 0.38
+uv run zeta-engine rag "问题" \
+  --max-cycles 6 \
+  --top-k 8 \
+  --rerank-candidates 50 \
+  --alpha 0.23 \
+  --debug
 ```
 
-使用 `--debug` 可输出每轮实际查询、新结果预览、累计证据数量、上下文长度和
-模型动作：
+`--debug` 会显示各轮查询、要求状态、证据规模和模型动作。`--max-cycles` 允许 1–8，`--top-k` 控制最终供回答使用的检索结果数。
+
+例如，完整表格中的比例题会留下类似
+`collection → deterministic_table_ratio` 的 trace：Agent 决定需要完整集合，工具扫描整张表并
+返回机器可读的分子、分母和上下界，闭环直接生成答案，不再让模型手工数 Top-K。
+
+## Web 界面与 API
+
+构建索引后启动服务：
 
 ```bash
-uv run zeta-engine rag "问题" --debug
-```
-
-### Web 前端
-
-先构造索引，再启动同时托管前端和搜索 API 的服务：
-
-```bash
-uv run zeta-engine index --mode search
 uv run zeta-engine serve
 ```
 
-打开 <http://127.0.0.1:8000>。搜索接口为
-`GET /api/search?q=关键词&limit=20&ranking=dense`；`ranking` 默认为 `hybrid`。
-Hybrid 接口示例为
-`GET /api/search?q=关键词&ranking=hybrid&alpha=0.38`。
-CrossEncoder 接口使用 `GET /api/search?q=关键词&ranking=rerank`。
-RAG 可在页面下拉菜单中选择，也可使用
-`GET /api/search?q=问题&ranking=rag&max_cycles=4`；Agent 使用 Hybrid 检索，返回模型回答和各轮实际使用的来源。追加 `debug=1` 时，响应中还会包含结构化的 `trace`。
+默认监听 <http://127.0.0.1:8000>，并托管根目录的 `index.html`。可通过 `--host`、`--port` 和 `--frontend` 修改。
 
-### 统计
+搜索 API：
+
+```text
+GET /api/search?q=关键词&ranking=hybrid&limit=20&alpha=0.23
+```
+
+RAG API：
+
+```text
+GET /api/search?q=问题&ranking=rag&limit=5&max_cycles=5&debug=1
+```
+
+`ranking` 可为 `bm25f`、`dense`、`hybrid`、`rerank` 或 `rag`。`limit` 范围为 1–100；RAG 模式默认为 5，其他模式默认为 20。普通搜索返回 `query`、`count` 和 `results`；RAG 还会返回 `answer`、`status`、`complete`、`requirements`、`claims` 和 `sources`。
+
+## 默认路径
+
+| 用途 | 默认路径 |
+|---|---|
+| 爬取队列 | `data/crawl_queue.db` |
+| 文档数据库 | `data/zeta.db` |
+| 文档倒排索引 | `data/index.db` |
+| passage BM25、Dense 向量与元数据 | `data/dense/` |
+| embedding 模型 | `models/bge-small-zh-v1.5/` |
+| reranker 模型 | `models/bge-reranker-base/` |
+| 运行日志 | `logs/zeta-engine.log` |
+| Web 前端 | `index.html` |
+
+大多数命令都允许使用 `--document-db`、`--index-db`、`--dense-index` 或模型路径参数覆盖默认值。
+
+## 统计与评测
+
+查看各站点文档数和索引词项数：
 
 ```bash
 uv run zeta-engine stats
 ```
 
-### 评测
-
-构造索引后运行搜索 MRR@20 评测（默认 `--mode search`）：
+使用配套评测服务运行搜索 MRR@20 评测：
 
 ```bash
-uv run zeta-engine eval
+uv run zeta-engine eval --mode search --ranking hybrid --device cpu
 ```
 
 运行 RAG 回答评测：
 
 ```bash
-uv run zeta-engine eval --mode rag --top-k 5
+uv run zeta-engine eval --mode rag --top-k 8 --device cpu
 ```
 
-RAG 模式使用 `/rag/login`、`/rag/score` 接口；单题异常或耗时超过 60 秒时
-提交空答案，debug 模式会显示逐题裁判分数与理由。
+默认评测服务地址为 `http://10.47.253.18:8080/`，可使用 `--base-url` 覆盖。搜索模式调用 `/login` 和 `/mrr`，RAG 模式调用 `/rag/login` 和 `/rag/score`。
 
-如需使用其他评测服务地址：
-
-```bash
-uv run zeta-engine eval --base-url http://localhost:8080
-```
-
-搜索模式下空密码进入 debug，评测服务会返回每道查询的 reciprocal rank：
-
-```bash
-uv run zeta-engine eval --ranking dense --device mps
-uv run zeta-engine eval --ranking hybrid --alpha 0.38 --device mps
-uv run zeta-engine eval --ranking rerank --device mps
-```
-
-### 指定数据库
-
-```bash
-uv run zeta-engine stats \
-  --document-db data/zeta.db \
-  --index-db data/index.db
-```
-
-## 配置
-
-爬虫站点配置位于：
-
-```text
-src/zeta_engine/constants.py
-```
-
-主要配置：
-
-- `SEED_URLS`：开始爬取的入口页面
-- `ALLOWED_DOMAINS`：允许继续抓取的站点范围
-- `HEADERS`：HTTP 请求头
-- `TIMEOUT`：请求超时时间
-
-## 测试
+## 开发与测试
 
 ```bash
 uv run python -m unittest discover -s tests
 ```
+
+核心模块：
+
+| 模块 | 职责 |
+|---|---|
+| `crawler.py` / `extraction_rules.py` | 抓取、链接发现与正文提取 |
+| `storage.py` | SQLite 文档、队列和索引存储 |
+| `index.py` / `tokenizer.py` | 文档倒排索引与中文分词 |
+| `dense.py` / `search.py` | passage 索引、混合检索与重排 |
+| `rag.py` / `rag_engine.py` / `rag_*.py` | 兼容入口、唯一 Agentic 闭环、证据、协议、Prompt 与确定性推理 |
+| `collection_ops.py` / `collection_rag.py` | 被闭环调用的结构化集合工具与确定性运算 |
+| `service.py` / `web.py` / `cli.py` | 服务编排、HTTP API 与命令行入口 |
+
+更改站点范围时，修改 `src/zeta_engine/constants.py` 中的 `SEED_URLS` 和 `ALLOWED_DOMAINS`；更改某站正文容器时，修改 `src/zeta_engine/extraction_rules.py`。
