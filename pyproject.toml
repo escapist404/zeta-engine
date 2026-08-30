@@ -1,7 +1,7 @@
 [project]
 name = "zeta-engine"
 version = "0.1.0"
-description = "Add your description here"
+description = "Chinese site search and retrieval-augmented generation engine"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
