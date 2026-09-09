@@ -18,7 +18,6 @@ reports/
 
 # Local project context and audit workspaces
 /CONTEXT.md
-eval/self_eval/
 
 # Local embedding models
 models/
