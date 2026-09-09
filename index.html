@@ -14,10 +14,30 @@
       background: #f3eee7;
       font-family: Arial, "Noto Sans SC", sans-serif;
       font-synthesis: none;
+      --paper: #faf7f2;
+      --ink-muted: #625e57;
+      --accent: #d97757;
+      --line: #c9c1b7;
     }
-    body { min-height: 100vh; margin: 0; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 8%, rgb(217 119 87 / 12%), transparent 28rem),
+        radial-gradient(circle at 88% 92%, rgb(117 111 103 / 9%), transparent 24rem);
+    }
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background-image: linear-gradient(rgb(25 25 24 / 2.5%) 1px, transparent 1px), linear-gradient(90deg, rgb(25 25 24 / 2.5%) 1px, transparent 1px);
+      background-size: 32px 32px;
+      content: "";
+      mask-image: linear-gradient(to bottom, black, transparent 72%);
+      pointer-events: none;
+    }
     main {
-      width: min(760px, calc(100% - 40px));
+      width: min(800px, calc(100% - 40px));
       margin: 0 auto;
       padding: 21vh 0 80px;
       transition: padding 180ms ease;
@@ -48,11 +68,13 @@
       min-height: 72px;
       padding: 7px 8px 7px 22px;
       border: 1px solid #958e85;
-      border-radius: 5px;
-      background: #faf7f2;
+      border-radius: 8px;
+      background: rgb(250 247 242 / 92%);
       box-shadow: 8px 8px 0 #dfd7cc;
+      backdrop-filter: blur(12px);
       transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
     }
+    .has-results form { position: sticky; top: 18px; z-index: 2; }
     form:focus-within {
       border-color: #191918;
       box-shadow: 11px 11px 0 #dfd7cc;
@@ -77,7 +99,7 @@
       place-items: center;
       flex: 0 0 auto;
       border: 0;
-      border-radius: 3px;
+      border-radius: 5px;
       color: #f3eee7;
       background: #191918;
       cursor: pointer;
@@ -98,7 +120,21 @@
       stroke-linecap: round;
       stroke-width: 2;
     }
+    .button-spinner {
+      display: none;
+      width: 19px;
+      height: 19px;
+      border: 2px solid rgb(243 238 231 / 38%);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    .search-button.is-loading svg { display: none; }
+    .search-button.is-loading .button-spinner { display: block; }
     #status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
       min-height: 24px;
       margin: 34px 2px 10px;
       color: #625e57;
@@ -106,6 +142,31 @@
       font-weight: 700;
       letter-spacing: .06em;
     }
+    .loading::before {
+      width: 12px;
+      height: 12px;
+      flex: 0 0 auto;
+      border: 2px solid #d8c8bc;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+      content: "";
+    }
+    #search-loading { padding: 6px 0 12px; }
+    #search-loading[hidden] { display: none; }
+    .skeleton-result { padding: 23px 2px 25px; border-top: 1px solid var(--line); }
+    .skeleton-line {
+      height: 12px;
+      margin-top: 12px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #e2dbd2 25%, #eee8e0 45%, #e2dbd2 65%);
+      background-size: 240% 100%;
+      animation: shimmer 1.35s ease-in-out infinite;
+    }
+    .skeleton-line.title { width: 68%; height: 18px; margin-top: 0; }
+    .skeleton-line.source { width: 24%; height: 9px; }
+    .skeleton-line.copy { width: 92%; }
+    .skeleton-line.short { width: 58%; }
     #answer-offer {
       display: flex;
       align-items: center;
@@ -114,8 +175,9 @@
       margin: 12px 0 28px;
       padding: 20px 22px;
       border: 1px solid #d7c0b3;
-      border-radius: 5px;
-      background: #f8e9df;
+      border-radius: 8px;
+      background: rgb(248 233 223 / 88%);
+      box-shadow: 0 10px 32px rgb(113 75 56 / 8%);
     }
     #answer-offer[hidden], #answer[hidden], #empty-state[hidden] { display: none; }
     .offer-copy { min-width: 0; }
@@ -125,7 +187,7 @@
       flex: 0 0 auto;
       padding: 10px 14px;
       border: 1px solid #bd6247;
-      border-radius: 3px;
+      border-radius: 5px;
       color: #8b3e29;
       background: transparent;
       cursor: pointer;
@@ -133,7 +195,7 @@
       font-weight: 700;
     }
     .answer-button:hover { color: #fffaf4; background: #bd6247; }
-    #answer { position: relative; margin: 12px 0 30px; padding: 32px 40px; background: #faf7f2; box-shadow: inset 0 0 0 1px #dfd7cc; }
+    #answer { position: relative; margin: 12px 0 30px; padding: 32px 40px; border-radius: 8px; background: var(--paper); box-shadow: inset 0 0 0 1px #dfd7cc, 0 14px 40px rgb(69 51 41 / 7%); }
     #answer::before, #answer::after {
       position: absolute;
       width: 12px;
@@ -155,9 +217,18 @@
     }
     .answer-label { margin: 0 0 12px; color: #9b4a34; font-size: .72rem; font-weight: 700; letter-spacing: .08em; }
     #answer-text { margin: 0; color: #2d2b28; font-family: Georgia, "Times New Roman", "Noto Serif SC", serif; line-height: 1.8; white-space: pre-wrap; }
+    #answer.is-loading #answer-text {
+      min-height: 92px;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #e8e0d7 25%, #f3ede6 45%, #e8e0d7 65%);
+      background-size: 240% 100%;
+      animation: shimmer 1.35s ease-in-out infinite;
+      opacity: .78;
+    }
     #answer-status { margin: 12px 0 0; color: #756f67; font-size: .75rem; }
     #results { margin: 0; padding: 0; list-style: none; }
-    .result { padding: 23px 2px 25px; border-top: 1px solid #c9c1b7; }
+    .result { padding: 23px 10px 25px; border-top: 1px solid var(--line); transition: background 160ms ease, transform 160ms ease; }
+    .result:hover { background: rgb(250 247 242 / 58%); transform: translateX(4px); }
     .result a {
       display: -webkit-box;
       overflow: hidden;
@@ -187,6 +258,8 @@
     #empty-state p { margin: 0 0 10px; }
     .retry-button { padding: 0; border: 0; color: #9b4a34; background: none; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
     .error { color: #b64a35 !important; }
+    @keyframes spin { to { transform: rotate(1turn); } }
+    @keyframes shimmer { to { background-position: -240% 0; } }
     @media (max-width: 520px) {
       main { width: min(100% - 28px, 760px); padding-top: 19vh; }
       main.has-results { padding-top: 24px; }
@@ -202,7 +275,11 @@
       .result a { font-size: 1.25rem; }
       .snippet { -webkit-line-clamp: 3; }
     }
-    @media (prefers-reduced-motion: reduce) { main, form, .search-button { transition: none; } }
+    @media (prefers-reduced-motion: reduce) {
+      main, form, .search-button, .result { transition: none; }
+      .button-spinner, .loading::before { animation-duration: 1.8s; }
+      .skeleton-line, #answer.is-loading #answer-text { animation: none; }
+    }
   </style>
 </head>
 <body>
@@ -212,11 +289,24 @@
     <form id="search-form" role="search">
       <input id="query" name="q" aria-label="搜索" placeholder="搜索人大官网、招生政策、办事信息…" autocomplete="off" autofocus required>
       <button class="search-button" type="submit" aria-label="搜索">
+        <span class="button-spinner" aria-hidden="true"></span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path><path d="m14 7 5 5-5 5"></path></svg>
       </button>
     </form>
 
     <div id="status" role="status" aria-live="polite"></div>
+
+    <div id="search-loading" aria-hidden="true" hidden>
+      <div class="skeleton-result">
+        <div class="skeleton-line title"></div><div class="skeleton-line source"></div><div class="skeleton-line copy"></div><div class="skeleton-line short"></div>
+      </div>
+      <div class="skeleton-result">
+        <div class="skeleton-line title"></div><div class="skeleton-line source"></div><div class="skeleton-line copy"></div><div class="skeleton-line short"></div>
+      </div>
+      <div class="skeleton-result">
+        <div class="skeleton-line title"></div><div class="skeleton-line source"></div><div class="skeleton-line copy"></div><div class="skeleton-line short"></div>
+      </div>
+    </div>
 
     <aside id="answer-offer" aria-label="智能回答" hidden>
       <div class="offer-copy">
@@ -245,6 +335,7 @@
     const input = document.querySelector("input");
     const searchButton = document.querySelector(".search-button");
     const status = document.querySelector("#status");
+    const searchLoading = document.querySelector("#search-loading");
     const offer = document.querySelector("#answer-offer");
     const answerButton = document.querySelector(".answer-button");
     const answer = document.querySelector("#answer");
@@ -297,24 +388,31 @@
       input.value = "";
       status.textContent = "";
       status.className = "";
+      searchLoading.hidden = true;
       offer.hidden = true;
       answer.hidden = true;
+      answer.classList.remove("is-loading");
+      answer.removeAttribute("aria-busy");
       emptyState.hidden = true;
       list.replaceChildren();
       searchButton.disabled = false;
+      searchButton.classList.remove("is-loading");
       answerButton.disabled = false;
     }
 
     async function search(query, { updateHistory = true } = {}) {
       const { controller, sequence } = beginRequest();
       main.classList.add("has-results");
-      status.className = "";
+      status.className = "loading";
       status.textContent = "正在查找官网资料…";
+      searchLoading.hidden = false;
       offer.hidden = true;
       answer.hidden = true;
+      answer.classList.remove("is-loading");
       emptyState.hidden = true;
       list.replaceChildren();
       searchButton.disabled = true;
+      searchButton.classList.add("is-loading");
       answerButton.disabled = false;
       if (updateHistory) history.pushState({}, "", `?q=${encodeURIComponent(query)}`);
 
@@ -323,6 +421,7 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "搜索失败");
         if (sequence !== requestSequence) return;
+        status.className = "";
         status.textContent = data.count ? `找到 ${data.count} 条相关结果` : "没有找到相关结果";
         showResults(data.results);
         offer.hidden = !data.count;
@@ -332,7 +431,12 @@
         status.className = "error";
         status.textContent = error.message;
       } finally {
-        if (sequence === requestSequence) searchButton.disabled = false;
+        if (sequence === requestSequence) {
+          status.classList.remove("loading");
+          searchLoading.hidden = true;
+          searchButton.disabled = false;
+          searchButton.classList.remove("is-loading");
+        }
       }
     }
 
@@ -342,8 +446,10 @@
       const { controller, sequence } = beginRequest();
       offer.hidden = true;
       answer.hidden = false;
+      answer.classList.add("is-loading");
+      answer.setAttribute("aria-busy", "true");
       answerText.textContent = "";
-      answerStatus.className = "";
+      answerStatus.className = "loading";
       answerStatus.textContent = "正在阅读并整理官网资料…";
       answerButton.disabled = true;
       if (updateHistory) history.pushState({}, "", `?q=${encodeURIComponent(query)}&view=answer`);
@@ -363,7 +469,12 @@
         answerStatus.textContent = error.message;
         offer.hidden = false;
       } finally {
-        if (sequence === requestSequence) answerButton.disabled = false;
+        if (sequence === requestSequence) {
+          answer.classList.remove("is-loading");
+          answer.removeAttribute("aria-busy");
+          answerStatus.classList.remove("loading");
+          answerButton.disabled = false;
+        }
       }
     }
 
