@@ -1,0 +1,21 @@
+% Adapted from PPT slide 2. Alpha weights follow retrieval/search.py.
+\begin{tikzpicture}[
+  box/.style={draw=zetablue,fill=zetablue!5,align=center,minimum height=12mm,text width=2.8cm,font=\small},
+  arrow/.style={-{Latex[length=2mm]},thick,draw=zetagray},
+  note/.style={font=\scriptsize,align=center,fill=white,inner sep=2pt}
+]
+\node[box,text width=2cm] (q) at (0,0) {查询\\规范化};
+\node[box,draw=zetaorange,fill=zetaorange!6] (s) at (3.7,1.3) {词法匹配\\BM25F / BM25};
+\node[box,draw=zetacyan,fill=zetacyan!6] (d) at (3.7,-1.3) {语义匹配\\Dense cosine};
+\node[box] (h) at (7.8,0) {归一化后融合\\Hybrid};
+\node[box,draw=zetagreen,fill=zetagreen!6] (r) at (11.6,0) {CrossEncoder\\重排候选};
+\draw[arrow] (q.east) -- (1.65,0) |- (s.west);
+\draw[arrow] (1.65,0) |- (d.west);
+\draw[arrow] (s.east) -- node[note,above]{$1-\alpha$} (5.9,1.3) -| (h.north);
+\draw[arrow] (d.east) -- node[note,below]{$\alpha$} (5.9,-1.3) -| (h.south);
+\draw[arrow] (h) -- (r);
+\node[note,text width=4.1cm] at (3.7,-2.45) {文档搜索：按文档 ID 对齐\\RAG：按共享 Passage ID 对齐};
+\node[note,text width=3.4cm] (out) at (11.6,-2.1) {搜索：网页与摘要\\RAG：命中片段供结构恢复};
+\draw[arrow] (r.south) -- (out.north);
+\node[note] at (7.8,2.45) {$s=(1-\alpha)\hat{s}_{\rm sparse}+\alpha\hat{s}_{\rm dense}$};
+\end{tikzpicture}

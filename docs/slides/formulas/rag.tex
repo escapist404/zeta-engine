@@ -1,0 +1,15 @@
+\documentclass[border=4pt]{standalone}
+\usepackage{amsmath,amssymb}
+\begin{document}$\displaystyle
+\begin{aligned}
+S_0&=(\tilde q,E_0=\varnothing,L_0=\varnothing),\\
+a_t&=\mathrm{Agent}(S_t),\\
+S_{t+1}&=
+\begin{cases}
+\mathrm{Update}(S_t,\mathrm{Tool}(a_t)),&a_t\in\mathcal T,\\
+\mathrm{Update}(S_t,\mathrm{Verifier}(A_t,E_t)),&a_t=\mathrm{Answer},
+\end{cases}\\
+S_T&\xrightarrow{\mathrm{Finalize}}(\mathrm{Answer},\mathrm{Sources},\mathrm{Status}),\\
+\mathcal T&=\{\mathrm{Search},\mathrm{Collect},\mathrm{Calculate}\}.
+\end{aligned}
+$\end{document}

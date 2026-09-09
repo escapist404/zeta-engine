@@ -1,0 +1,16 @@
+\documentclass[border=4pt]{standalone}
+\usepackage{amsmath,amssymb}
+\begin{document}$\displaystyle
+\begin{aligned}
+\mathcal D&\xrightarrow{\mathrm{Index+Chunk+Encode}}
+(I_{\mathrm{BM25F}},I_{\mathrm{FTS5}},V),\\
+\tilde q&\xrightarrow{\mathrm{Sparse}\,\cup\,\mathrm{Dense}}C
+\xrightarrow{(1-\alpha)\tilde s_s+\alpha\tilde s_d}C'
+\xrightarrow{\mathrm{CrossEncoder}}R_k,\\
+R_k&\xrightarrow{\mathrm{Output}}
+\begin{cases}
+\mathrm{DocumentCards}(R_k),&\mathrm{search},\\
+\mathrm{RecoverStructure}(R_k,\mathcal D),&\mathrm{rag}.
+\end{cases}
+\end{aligned}
+$\end{document}

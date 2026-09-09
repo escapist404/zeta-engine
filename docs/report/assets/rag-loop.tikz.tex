@@ -1,0 +1,19 @@
+% Adapted from PPT slide 3, with the implemented answer action.
+\begin{tikzpicture}[
+  box/.style={draw=zetablue,fill=zetablue!5,align=center,minimum height=12mm,text width=2.4cm,font=\small},
+  arrow/.style={-{Latex[length=2mm]},thick,draw=zetagray},
+  note/.style={font=\scriptsize,align=center,fill=white,inner sep=2pt}
+]
+\node[box] (pool) at (0,0) {证据上下文\\ID 与来源};
+\node[box] (agent) at (4,0) {Agent\\选择动作};
+\node[box] (verify) at (8,0) {Verifier\\要求与断言};
+\node[box,draw=zetagreen,fill=zetagreen!6] (out) at (11.9,0) {答案\\状态与来源};
+\draw[arrow] (pool) -- (agent);
+\draw[arrow] (agent) -- node[note,above]{\texttt{answer}\\候选答案} (verify);
+\draw[arrow] (verify) -- node[note,above]{通过} (out);
+\node[box,text width=6.2cm,draw=zetaorange,fill=zetaorange!6] (tools) at (4,-2.45) {\texttt{search}\quad\texttt{collection}\quad\texttt{calculate}\\补检查询 / 完整表格 / 确定性计算};
+\draw[arrow] (agent) -- node[note,right]{调用工具} (tools);
+\draw[arrow] (tools.west) -| node[note,pos=0.7,left]{更新证据} (pool.south);
+\draw[arrow] (verify.north) -- (8,1.6) -- node[note,above]{未通过且尚有轮次：反馈与补检} (0,1.6) -- (pool.north);
+\node[note,text width=4cm] at (10.5,-2.5) {末轮未通过：修订并复审\\默认 5 轮 / 12 次模型调用\\调用预算耗尽：报错终止};
+\end{tikzpicture}

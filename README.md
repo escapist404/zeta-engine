@@ -2,6 +2,49 @@
 
 ζ-engine是一个面向中国人民大学相关站点的中文搜索与 RAG 问答引擎。它能够抓取多个学院站点，保存清理后的正文与语义 HTML，并提供 BM25F、Dense、Hybrid、CrossEncoder 重排和多轮 RAG。
 
+最终材料位于 `docs/`：[技术报告](docs/report/main.tex)、[报告 PDF](docs/report/zeta-engine-technical-report.pdf)、[答辩幻灯片](docs/slides/zeta-engine-slides.pptx)和[幻灯片 PDF](docs/slides/zeta-engine-slides.pdf)。
+
+## 代码结构
+
+代码按职责组织为以下包。CLI 与 HTTP 共用应用服务，RAG 通过应用层注入的函数调用检索和表格扫描工具。
+
+```text
+src/zeta_engine/
+├── cli.py                   # 已安装命令的入口，转交 interfaces.cli.main
+├── interfaces/              # 用户接口：参数解析、HTTP、输出展示
+│   ├── cli.py
+│   └── web.py
+├── application/             # 应用编排：搜索结果、Passage 获取、问答
+│   └── service.py
+├── ingestion/               # 网页采集与站点提取规则
+│   ├── crawler.py
+│   └── extraction_rules.py
+├── retrieval/               # 建索引、召回、重排与来源内容恢复
+│   ├── index.py             # 文档倒排索引
+│   ├── dense.py             # Passage 切分、向量与稀疏索引
+│   ├── search.py            # BM25F、Hybrid、CrossEncoder
+│   └── acquisition.py       # HTML 结构恢复与完整表格扫描
+├── rag/                     # 问答闭环
+│   ├── __init__.py          # 问答入口与模型调用
+│   ├── engine.py            # Agent → 工具 → Verifier
+│   ├── evidence.py          # 证据池、回答槽位和 Agent 决策
+│   ├── protocol.py          # 动作解析与审核结果校验
+│   ├── calculations.py      # 证据约束的计算
+│   ├── prompts.py
+│   ├── config.py
+│   └── types.py
+├── infrastructure/          # SQLite、文本处理和共享常量
+│   ├── storage.py
+│   ├── tokenizer.py
+│   └── constants.py
+└── evaluation/              # 外部评测服务接入
+    └── runner.py
+```
+
+在线请求依次经过 `interfaces → application → retrieval / rag`；采集、检索和问答使用 `infrastructure` 中的基础能力。CLI 还直接组织离线采集、建库和评测。`rag` 不导入应用服务，检索工具通过函数参数注入，因此不会形成反向依赖。
+
+仓库内 Python 调用使用新的模块路径，例如 `from zeta_engine.application.service import answer_question`。原来的扁平模块路径已迁移；`zeta_engine.rag` 问答入口及 `zeta-engine` 命令保持可用。数据库路径、命令参数和 HTTP API 不变。
+
 ## 主要能力
 
 - 带持久化队列、并发下载、失败重试和定期刷新的站点爬虫。
@@ -10,7 +53,7 @@
 - 共享 passage 边界的 BM25 与 BGE Dense 索引，支持混合召回。
 - 使用 BGE CrossEncoder 对候选 passage 重排并按文档聚合。
 - 多轮 RAG：跟踪问题要求、补充检索、恢复语义结构、验证引用与答案完整性。
-- 针对名单、年份、分组计数和跨组交集问题的结构化集合处理。
+- Agent 可调用的完整表格扫描，以及带证据约束的通用计算工具。
 - 同时提供 CLI、Web 界面和 JSON API。
 
 ## 环境要求
@@ -42,7 +85,7 @@ uv run zeta-engine --help
 uv run zeta-engine crawl
 ```
 
-默认从 `src/zeta_engine/constants.py` 中的 `SEED_URLS` 开始，只跟踪 `ALLOWED_DOMAINS` 范围内的链接。文档、爬取队列和日志分别写入 `data/zeta.db`、`data/crawl_queue.db` 和 `logs/zeta-engine.log`。
+默认从 `src/zeta_engine/infrastructure/constants.py` 中的 `SEED_URLS` 开始，只跟踪 `ALLOWED_DOMAINS` 范围内的链接。文档、爬取队列和日志分别写入 `data/zeta.db`、`data/crawl_queue.db` 和 `logs/zeta-engine.log`。
 
 调整爬取规模和并发：
 
@@ -123,9 +166,8 @@ uv run zeta-engine rag "经济困难学生如何申请资助？" --device cpu
 RAG 默认最多运行 5 轮。每轮使用 Hybrid passage 召回与 CrossEncoder 重排，再尝试从已保存的语义 HTML 中恢复相邻正文或完整列表、表格和 section。Agent 会跟踪问题中未完成的要求，为其生成补充查询，并检查最终答案是否受现有证据支持。
 
 这里只有一套 Agentic RAG 闭环。`service.answer_question` 是应用入口，所有问题都进入
-`rag_engine` 的同一个 `Agent → 工具 → Verifier` 循环。Agent 可在循环中选择普通检索、
-完整集合扫描或确定性计算；`collection_rag` 只是完整名单/表格工具，不拥有第二套 system
-prompt，也不在闭环外预先路由问题。
+`rag.engine` 的同一个 `Agent → 工具 → Verifier` 循环。Agent 可在循环中选择普通检索、
+完整表格扫描或通用计算；控制层不根据题面匹配专用解法，也不会覆盖 Agent 的动作。
 
 ```bash
 uv run zeta-engine rag "问题" \
@@ -136,11 +178,11 @@ uv run zeta-engine rag "问题" \
   --debug
 ```
 
-`--debug` 会显示各轮查询、要求状态、证据规模和模型动作。`--max-cycles` 允许 1–8，`--top-k` 控制最终供回答使用的检索结果数。
+`--debug` 会显示各轮调用的技能及参数、要求状态、证据规模和模型动作。`--max-cycles` 允许 1–8，`--top-k` 控制最终供回答使用的检索结果数。
 
 例如，完整表格中的比例题会留下类似
-`collection → deterministic_table_ratio` 的 trace：Agent 决定需要完整集合，工具扫描整张表并
-返回机器可读的分子、分母和上下界，闭环直接生成答案，不再让模型手工数 Top-K。
+`collection → calculate → verified_answer` 的 trace：Agent 决定需要完整集合，工具扫描整张表，
+再由通用计算器完成可追溯运算，最后交给 Verifier 审计答案。
 
 ## Web 界面与 API
 
@@ -213,12 +255,12 @@ uv run python -m unittest discover -s tests
 
 | 模块 | 职责 |
 |---|---|
-| `crawler.py` / `extraction_rules.py` | 抓取、链接发现与正文提取 |
-| `storage.py` | SQLite 文档、队列和索引存储 |
-| `index.py` / `tokenizer.py` | 文档倒排索引与中文分词 |
-| `dense.py` / `search.py` | passage 索引、混合检索与重排 |
-| `rag.py` / `rag_engine.py` / `rag_*.py` | 兼容入口、唯一 Agentic 闭环、证据、协议、Prompt 与确定性推理 |
-| `collection_ops.py` / `collection_rag.py` | 被闭环调用的结构化集合工具与确定性运算 |
-| `service.py` / `web.py` / `cli.py` | 服务编排、HTTP API 与命令行入口 |
+| `ingestion/crawler.py` / `extraction_rules.py` | 抓取、链接发现与正文提取 |
+| `infrastructure/storage.py` | SQLite 文档、队列和索引存储 |
+| `retrieval/index.py` / `infrastructure/tokenizer.py` | 文档倒排索引与中文分词 |
+| `retrieval/dense.py` / `search.py` | passage 索引、混合检索与重排 |
+| `rag/` | Agentic 闭环、证据、协议、Prompt 与通用计算 |
+| `retrieval/acquisition.py` | 检索证据恢复和完整表格扫描工具 |
+| `application/service.py` / `interfaces/` | 服务编排、HTTP API 与命令行接口 |
 
-更改站点范围时，修改 `src/zeta_engine/constants.py` 中的 `SEED_URLS` 和 `ALLOWED_DOMAINS`；更改某站正文容器时，修改 `src/zeta_engine/extraction_rules.py`。
+更改站点范围时，修改 `src/zeta_engine/infrastructure/constants.py` 中的 `SEED_URLS` 和 `ALLOWED_DOMAINS`；更改某站正文容器时，修改 `src/zeta_engine/ingestion/extraction_rules.py`。

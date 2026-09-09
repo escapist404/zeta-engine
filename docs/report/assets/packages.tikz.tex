@@ -1,0 +1,20 @@
+\begin{tikzpicture}[
+  box/.style={draw=zetablue,rounded corners,align=center,font=\small,minimum height=12mm,fill=zetablue!6},
+  arrow/.style={-{Latex[length=2mm]},thick,draw=zetagray},
+  note/.style={font=\scriptsize,align=center,fill=white,inner sep=2pt}
+]
+\node[box,text width=8.5cm] (interfaces) at (-1,0) {\texttt{interfaces}\quad CLI / HTTP\\解析请求与展示结果};
+\node[box,text width=7cm] (application) at (-2,-2) {\texttt{application/service.py}\\组织搜索、证据获取与问答};
+\node[box,text width=3.6cm,minimum height=19mm,fill=zetacyan!7] (retrieval) at (-4.15,-4.4) {\texttt{retrieval}\\召回、重排\\\texttt{acquisition} 获取证据};
+\node[box,text width=3.6cm,minimum height=19mm,fill=zetagreen!7] (rag) at (0.15,-4.4) {\texttt{rag}\\Agent、工具、Verifier\\证据池与计算};
+\node[box,text width=8.5cm,fill=zetalight] (infra) at (-2,-6.9) {\texttt{infrastructure}\\SQLite、文本处理与共享常量};
+\node[box,text width=3.4cm,minimum height=33mm,fill=zetaorange!7,draw=zetaorange] (offline) at (4.8,-3.1) {CLI 直接调度\\[3pt]\texttt{ingestion}：采集\\\texttt{retrieval}：建库\\\texttt{evaluation}：评测};
+\draw[arrow] (interfaces.south) -- (application.north);
+\draw[arrow] (application.south west) -- node[note,left]{检索与结构恢复} (retrieval.north);
+\draw[arrow] (application.south east) -- node[note,right]{注入工具回调} (rag.north);
+\draw[arrow] (retrieval.south) -- (retrieval.south |- infra.north);
+\draw[arrow] (rag.south) -- (rag.south |- infra.north);
+\draw[arrow] (interfaces.east) -| node[note,pos=0.65,right]{离线命令} (offline.north);
+\draw[arrow] (offline.south) |- (infra.east);
+\node[note,text width=12.8cm] (legend) at (0,-8.2) {箭头表示主要调用方向。评测复用应用服务与检索；RAG 通过回调使用检索工具。};
+\end{tikzpicture}

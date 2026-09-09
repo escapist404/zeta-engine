@@ -1,0 +1,16 @@
+\begin{tikzpicture}[
+  state/.style={draw=zetablue,rounded corners,minimum width=25mm,minimum height=10mm,align=center,font=\small,fill=zetablue!6},
+  arrow/.style={-{Latex[length=2mm]},thick,draw=zetagray},
+  note/.style={font=\scriptsize,fill=white,inner sep=2pt,align=center}
+]
+\node[state] (pending) at (-4,0) {pending};
+\node[state,fill=zetacyan!8] (processing) at (0,0) {processing};
+\node[state,draw=zetagreen,fill=zetagreen!8] (done) at (4,0) {done};
+\node[state,draw=zetared,fill=zetared!6] (failed) at (0,-2.1) {failed};
+\draw[arrow] (pending) -- node[note,above]{领取任务} (processing);
+\draw[arrow] (processing) -- node[note,above]{保存成功或跳过} (done);
+\draw[arrow] (processing.north) -- (0,1.3) -- node[note,above]{失败未超限 / 重启恢复} (-4,1.3) -- (pending.north);
+\draw[arrow] (done.north) -- (4,2.5) -- node[note,above]{到期刷新} (-4,2.5) -- (-4,1.3);
+\draw[arrow] (processing.south) -- node[note,right]{失败达到上限} (failed.north);
+\draw[arrow] (failed.west) -- node[note,below]{显式重试} (-4,-2.1) -- (pending.south);
+\end{tikzpicture}

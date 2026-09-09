@@ -1,0 +1,12 @@
+\documentclass[border=4pt]{standalone}
+\usepackage{amsmath,amssymb}
+\begin{document}$\displaystyle
+\begin{aligned}
+(q,m)&\xrightarrow{\mathrm{Normalize}}(\tilde q,m),\\
+\mathrm{Service}(\tilde q,m)&=
+\begin{cases}
+\mathrm{SearchDocuments}(\tilde q),&m=\mathrm{search},\\
+\mathrm{RAG}(\tilde q;f_s,f_c),&m=\mathrm{rag}.
+\end{cases}
+\end{aligned}
+$\end{document}
