@@ -1,8 +1,8 @@
 import logging
 
-from zeta_engine.constants import STOPWORDS_VERSION
-from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import (
+from zeta_engine.infrastructure.constants import STOPWORDS_VERSION
+from zeta_engine.infrastructure.storage import Storage
+from zeta_engine.infrastructure.tokenizer import (
     TEXT_NORMALIZER_VERSION,
     text_normalize,
     tokenize_with_positions,

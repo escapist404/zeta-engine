@@ -11,8 +11,8 @@ from typing import Any
 
 import numpy as np
 
-from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
+from zeta_engine.infrastructure.storage import Storage
+from zeta_engine.infrastructure.tokenizer import text_normalize, tokenize_with_positions
 
 logger = logging.getLogger(__name__)
 

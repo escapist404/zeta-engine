@@ -7,15 +7,15 @@ from typing import Any
 
 import numpy as np
 
-from zeta_engine.dense import (
+from zeta_engine.retrieval.dense import (
     DEFAULT_INDEX_DIR,
     PassageHit,
     search_dense,
     search_dense_passages,
     search_sparse_passages,
 )
-from zeta_engine.storage import Storage
-from zeta_engine.tokenizer import (
+from zeta_engine.infrastructure.storage import Storage
+from zeta_engine.infrastructure.tokenizer import (
     text_normalize,
     tokenize_with_positions,
 )

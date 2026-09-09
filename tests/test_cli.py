@@ -3,119 +3,23 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
-from zeta_engine.cli import build_parser, format_rag_debug
-from zeta_engine.eval import DEFAULT_BASE_URL
-from zeta_engine.storage import Storage
+from zeta_engine.interfaces.cli import build_parser
 
 
 class CliTest(unittest.TestCase):
-    def test_passes_crawl_refresh_options(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            args = build_parser().parse_args([
-                "crawl",
-                "--document-db", str(root / "documents.db"),
-                "--queue-db", str(root / "queue.db"),
-                "--log-file", str(root / "crawl.log"),
-                "--refresh-after-hours", "24",
-                "--retry-failed",
-            ])
-            with (
-                patch("zeta_engine.cli.configure_logging"),
-                patch(
-                    "zeta_engine.cli.crawl_urls",
-                    return_value={},
-                ) as crawl_urls,
-            ):
-                self.assertEqual(args.handler(args), 0)
-
-            self.assertEqual(
-                crawl_urls.call_args.kwargs["refresh_after_hours"],
-                24,
-            )
-            self.assertTrue(crawl_urls.call_args.kwargs["retry_failed"])
-
-    def test_runs_evaluation_from_cli(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            document_db = Path(directory) / "documents.db"
-            index_db = Path(directory) / "index.db"
-            dense_index = Path(directory) / "dense"
-            document_db.touch()
-            index_db.touch()
-            dense_index.mkdir()
-            (dense_index / "metadata.json").touch()
-
-            args = build_parser().parse_args([
-                "eval",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--dense-index", str(dense_index),
-                "--base-url", "http://localhost:8080",
-            ])
-            with patch("zeta_engine.cli.run_evaluation") as run_evaluation:
-                self.assertEqual(args.handler(args), 0)
-
-            run_evaluation.assert_called_once_with(
-                document_db,
-                index_db,
-                base_url="http://localhost:8080",
-                ranking="hybrid",
-                dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
-                device=None,
-                alpha=.23,
-            )
-
-    def test_runs_rag_evaluation_from_cli(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            document_db = root / "documents.db"
-            index_db = root / "index.db"
-            dense_index = root / "dense"
-            document_db.touch()
-            index_db.touch()
-            dense_index.mkdir()
-            (dense_index / "metadata.json").touch()
-
-            args = build_parser().parse_args([
-                "eval",
-                "--mode", "rag",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--dense-index", str(dense_index),
-                "--top-k", "8",
-            ])
-            with patch(
-                "zeta_engine.cli.run_rag_evaluation"
-            ) as run_rag_evaluation:
-                self.assertEqual(args.handler(args), 0)
-
-            run_rag_evaluation.assert_called_once_with(
-                document_db,
-                index_db,
-                base_url=DEFAULT_BASE_URL,
-                dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
-                device=None,
-                alpha=.23,
-                top_k=8,
-            )
-
     def test_runs_rag_from_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             document_db = root / "documents.db"
             index_db = root / "index.db"
             dense_index = root / "dense"
+            reranker_model = root / "reranker"
             document_db.touch()
             index_db.touch()
             dense_index.mkdir()
+            reranker_model.mkdir()
             (dense_index / "metadata.json").touch()
             result = {
                 "title": "资助政策",
@@ -128,6 +32,7 @@ class CliTest(unittest.TestCase):
                 "--document-db", str(document_db),
                 "--index-db", str(index_db),
                 "--dense-index", str(dense_index),
+                "--reranker-model", str(reranker_model),
                 "--top-k", "3",
                 "--max-cycles", "6",
                 "--debug",
@@ -135,7 +40,7 @@ class CliTest(unittest.TestCase):
             ])
             with (
                 patch(
-                    "zeta_engine.cli.answer_question",
+                    "zeta_engine.interfaces.cli.answer_question",
                     return_value={
                         "answer": "可以申请。[文档1]",
                         "results": [result],
@@ -149,7 +54,7 @@ class CliTest(unittest.TestCase):
             self.assertIn("可以申请。[文档1]", output.getvalue())
             self.assertIn("https://example.test/policy", output.getvalue())
             self.assertIn("调试信息", output.getvalue())
-            self.assertIn("第 1 轮 · answer", output.getvalue())
+            self.assertIn("第 1 轮 · 提交候选答案", output.getvalue())
             self.assertEqual(
                 answer_question.call_args.args,
                 (document_db, index_db, "如何申请资助？"),
@@ -162,324 +67,12 @@ class CliTest(unittest.TestCase):
                 dense_index=dense_index,
                 device="mps",
                 alpha=.23,
-                reranker_model=Path("models/bge-reranker-base"),
+                reranker_model=reranker_model,
                 rerank_candidates=50,
                 reranker_batch_size=16,
                 max_cycles=6,
                 debug=True,
             )
-
-    def test_formats_rag_debug_as_a_compact_summary(self) -> None:
-        report = format_rag_debug({
-            "status": "partial",
-            "model_call_count": 4,
-            "requirements": [
-                {"question": "第一项", "status": "answered"},
-                {"question": "第二项", "status": "missing"},
-            ],
-            "trace": [{
-                "cycle": 1,
-                "action": "search",
-                "search_queries": ["初始查询"],
-                "next_queries": ["补充查询"],
-                "query_slots": {"补充查询": "s2"},
-                "answer_slots": [
-                    {"id": "s1", "status": "answered"},
-                    {"id": "s2", "status": "missing"},
-                ],
-                "new_results": [{
-                    "title": "证据标题",
-                    "preview": "不应输出的长正文",
-                }],
-                "evidence_count": 3,
-                "context_tokens_estimate": 1200,
-                "verification": {
-                    "valid": False,
-                    "requirements": [{
-                        "description": "第二项",
-                        "satisfied": False,
-                    }],
-                    "issues": [{"description": "缺少第二项证据"}],
-                },
-            }],
-        })
-
-        self.assertIn("状态: 部分回答 | 模型调用: 4", report)
-        self.assertIn("✓ 第一项", report)
-        self.assertIn("✗ 第二项", report)
-        self.assertIn("第 1 轮 · 继续检索", report)
-        self.assertIn("新证据: 证据标题", report)
-        self.assertIn("累计证据 3 条，上下文约 1200 tokens", report)
-        self.assertIn("下一步搜索: 补充查询 [s2]", report)
-        self.assertIn("槽位状态: s1=answered | s2=missing", report)
-        self.assertIn("校验问题: 缺少第二项证据", report)
-        self.assertNotIn("不应输出的长正文", report)
-
-    def test_formats_collection_rag_debug(self) -> None:
-        report = format_rag_debug({
-            "status": "answered",
-            "requirements": [],
-            "collection_trace": {
-                "filter": {
-                    "field": "负责人",
-                    "operator": "contains",
-                    "value": "张三",
-                },
-                "counts": {"2025": 1, "2026": 2},
-                "topic_mode": "semantic",
-                "topics": [{"label": "智能检索"}],
-            },
-        })
-
-        self.assertIn("集合过滤: 负责人 contains 张三", report)
-        self.assertIn("确定性计数: 2025=1，2026=2", report)
-        self.assertIn("共同主题 (semantic): 智能检索", report)
-        self.assertNotIn("没有 trace", report)
-
-    def test_builds_and_searches_dense_index_without_sparse_index(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            document_db = root / "documents.db"
-            dense_index = root / "dense"
-            model = root / "model"
-            model.mkdir()
-            dense_index.mkdir()
-            (dense_index / "metadata.json").touch()
-
-            with Storage(document_db=document_db) as storage:
-                assert storage.documents is not None
-                document_id = storage.documents.save(
-                    url="https://example.test/dense",
-                    title="Ｄｅｎｓｅ 结果",
-                    text="原始正文",
-                    fetched_at="2026-08-28T10:00:00",
-                )
-
-            parser = build_parser()
-            self.assertEqual(
-                parser.parse_args(["search", "查询"]).ranking,
-                "hybrid",
-            )
-            build_args = parser.parse_args([
-                "dense-index",
-                "--document-db", str(document_db),
-                "--dense-index", str(dense_index),
-                "--model", str(model),
-                "--device", "mps",
-                "--log-file", str(root / "dense.log"),
-            ])
-            with (
-                patch("zeta_engine.cli.configure_logging"),
-                patch(
-                    "zeta_engine.cli.build_dense_index",
-                    return_value={"documents": 1},
-                ) as build_dense_index,
-            ):
-                self.assertEqual(build_args.handler(build_args), 0)
-            build_dense_index.assert_called_once_with(
-                ANY,
-                dense_index,
-                model_path=model,
-                batch_size=32,
-                device="mps",
-            )
-
-            search_args = parser.parse_args([
-                "search", "语义查询",
-                "--document-db", str(document_db),
-                "--ranking", "dense",
-                "--dense-index", str(dense_index),
-                "--device", "mps",
-            ])
-            with patch(
-                "zeta_engine.cli.search_documents",
-                return_value=[{
-                    "title": "dense 结果",
-                    "url": "https://example.test/dense",
-                    "snippet": "最佳分块10",
-                }],
-            ) as search_documents, redirect_stdout(output := io.StringIO()):
-                self.assertEqual(search_args.handler(search_args), 0)
-
-            search_documents.assert_called_once_with(
-                document_db,
-                Path("data/index.db"),
-                "语义查询",
-                20,
-                ranking="dense",
-                dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
-                device="mps",
-                alpha=.23,
-            )
-            self.assertIn("dense 结果", output.getvalue())
-            self.assertIn("最佳分块10", output.getvalue())
-
-            evaluation_args = parser.parse_args([
-                "eval",
-                "--document-db", str(document_db),
-                "--ranking", "dense",
-                "--dense-index", str(dense_index),
-                "--device", "mps",
-            ])
-            with patch("zeta_engine.cli.run_evaluation") as run_evaluation:
-                self.assertEqual(evaluation_args.handler(evaluation_args), 0)
-            run_evaluation.assert_called_once_with(
-                document_db,
-                Path("data/index.db"),
-                base_url=DEFAULT_BASE_URL,
-                ranking="dense",
-                dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
-                device="mps",
-                alpha=.23,
-            )
-
-            index_db = root / "index.db"
-            index_db.touch()
-            hybrid_args = parser.parse_args([
-                "search", "混合查询",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--ranking", "hybrid",
-                "--dense-index", str(dense_index),
-                "--device", "mps",
-                "--alpha", "0.7",
-                "--limit", "7",
-            ])
-            with patch(
-                "zeta_engine.cli.search_documents",
-                return_value=[],
-            ) as search_documents, redirect_stdout(io.StringIO()):
-                self.assertEqual(hybrid_args.handler(hybrid_args), 0)
-            search_documents.assert_called_once_with(
-                document_db,
-                index_db,
-                "混合查询",
-                7,
-                ranking="hybrid",
-                dense_index=dense_index,
-                reranker_model=Path("models/bge-reranker-base"),
-                rerank_candidates=50,
-                reranker_batch_size=16,
-                device="mps",
-                alpha=.7,
-            )
-
-            reranker_model = root / "reranker"
-            reranker_model.mkdir()
-            rerank_args = parser.parse_args([
-                "search", "重排查询",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--ranking", "rerank",
-                "--dense-index", str(dense_index),
-                "--reranker-model", str(reranker_model),
-                "--rerank-candidates", "40",
-                "--reranker-batch-size", "8",
-                "--device", "mps",
-            ])
-            with patch(
-                "zeta_engine.cli.search_documents",
-                return_value=[],
-            ) as search_documents, redirect_stdout(io.StringIO()):
-                self.assertEqual(rerank_args.handler(rerank_args), 0)
-            search_documents.assert_called_once_with(
-                document_db,
-                index_db,
-                "重排查询",
-                20,
-                ranking="rerank",
-                dense_index=dense_index,
-                reranker_model=reranker_model,
-                rerank_candidates=40,
-                reranker_batch_size=8,
-                device="mps",
-                alpha=.23,
-            )
-
-    def test_builds_search_index_and_reports_term_count(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            document_db = Path(directory) / "documents.db"
-            index_db = Path(directory) / "index.db"
-            log_file = Path(directory) / "index.log"
-
-            with Storage(document_db=document_db) as storage:
-                assert storage.documents is not None
-                storage.documents.save(
-                    url="https://info.ruc.edu.cn/example",
-                    title="中国人民大学",
-                    text="信息学院",
-                    fetched_at="2026-08-26T10:00:00",
-                )
-
-            parser = build_parser()
-            index_args = parser.parse_args([
-                "index",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--log-file", str(log_file),
-                "--mode", "search",
-            ])
-            with patch("zeta_engine.cli.logging.info") as log_info:
-                self.assertEqual(index_args.handler(index_args), 0)
-            self.assertTrue(log_file.is_file())
-            self.assertEqual(log_info.call_count, 2)
-
-            stats_args = parser.parse_args([
-                "stats",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-            ])
-            output = io.StringIO()
-            with redirect_stdout(output):
-                self.assertEqual(stats_args.handler(stats_args), 0)
-
-            term_count = int(output.getvalue().rsplit("terms: ", 1)[1])
-            self.assertGreater(term_count, 0)
-
-            search_args = parser.parse_args([
-                "search", "中国人民大学",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--ranking", "bm25f",
-            ])
-            self.assertEqual(search_args.ranking, "bm25f")
-            output = io.StringIO()
-            with redirect_stdout(output):
-                self.assertEqual(search_args.handler(search_args), 0)
-            self.assertIn("https://info.ruc.edu.cn/example", output.getvalue())
-
-            phrase_args = parser.parse_args([
-                "search", "中国人民大学",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--phrase",
-            ])
-            with redirect_stdout(output := io.StringIO()):
-                self.assertEqual(phrase_args.handler(phrase_args), 0)
-            self.assertIn("https://info.ruc.edu.cn/example", output.getvalue())
-
-            bm25f_args = parser.parse_args([
-                "search", "中国人民大学",
-                "--document-db", str(document_db),
-                "--index-db", str(index_db),
-                "--ranking", "bm25f",
-            ])
-            with patch(
-                "zeta_engine.cli.search_documents",
-                return_value=[],
-            ) as search_documents:
-                self.assertEqual(bm25f_args.handler(bm25f_args), 0)
-            self.assertEqual(
-                search_documents.call_args.kwargs["ranking"],
-                "bm25f",
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

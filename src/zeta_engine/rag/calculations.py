@@ -1,10 +1,9 @@
 """Grounded deterministic calculation execution and rendering."""
 
 import json
-import re
 from hashlib import sha256
 
-from zeta_engine.rag_evidence import (
+from zeta_engine.rag.evidence import (
     Evidence,
     _clean,
     _grounding_text,
@@ -350,30 +349,3 @@ def _format_calculations(calculations: list[dict[str, object]]) -> str:
         f"结果：{json.dumps(calculation['result'], ensure_ascii=False)}"
         for index, calculation in enumerate(calculations, start=1)
     )
-
-def _deterministic_calculation_answer(
-    query: str,
-    calculations: list[dict[str, object]],
-) -> tuple[str, list[dict[str, object]]]:
-    """Render a terminal scalar calculation when the requested unit is clear."""
-
-    if not re.search(r"(?:一共|总共|合计).{0,20}(?:多少|几).{0,6}次", query):
-        return "", []
-    candidates = [
-        calculation
-        for calculation in calculations
-        if calculation.get("operator") == "sum"
-        and isinstance(calculation.get("result"), (int, float))
-        and not isinstance(calculation.get("result"), bool)
-    ]
-    if not candidates:
-        return "", []
-    terminal = candidates[-1]
-    result = terminal["result"]
-    rendered = str(int(result)) if isinstance(result, float) and result.is_integer() else str(result)
-    statement = f"一共{rendered}次"
-    return statement + "。", [{
-        "statement": statement,
-        "evidence_ids": list(terminal.get("evidence_ids", [])),
-        "calculation_ids": [str(terminal["name"])],
-    }]

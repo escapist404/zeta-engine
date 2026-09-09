@@ -3,9 +3,9 @@
 import json
 import re
 
-from zeta_engine.rag_config import AGENT_MAX_QUERIES
-from zeta_engine.rag_evidence import AnswerSlot, AgentDecision, _clean
-from zeta_engine.tokenizer import text_normalize
+from zeta_engine.rag.config import AGENT_MAX_QUERIES
+from zeta_engine.rag.evidence import AnswerSlot, AgentDecision, _clean
+from zeta_engine.infrastructure.tokenizer import text_normalize
 
 
 def _parse_json_object(response: str) -> dict[str, object]:
@@ -176,14 +176,11 @@ def _parse_verification(
     allowed_evidence_ids: list[str],
     calculation_names: set[str] | None = None,
     calculation_count: int = 0,
-    evidence_dates: dict[str, str] | None = None,
-    prefer_latest: bool = False,
 ) -> tuple[bool, str, list[str], dict[str, object]]:
     """Validate a verifier ledger and return its decision and feedback."""
 
     payload = _parse_json_object(response)
     calculation_names = calculation_names or set()
-    evidence_dates = evidence_dates or {}
     allowed = set(allowed_evidence_ids)
     requirements = payload.get("requirements")
     claims = payload.get("claims")
@@ -266,13 +263,9 @@ def _parse_verification(
             raise ValueError("Verifier 断言格式不正确")
         claim_ok &= claim["status"] == "supported"
 
-    temporal_feedback = []
-    unresolved_temporal_conflicts = 0
-    unresolved_conflicts = 0
-    temporal_excluded_evidence_ids: set[str] = set()
     conflict_ok = True
     for conflict in conflicts:
-        conflict_evidence_ids = referenced_evidence(conflict)
+        referenced_evidence(conflict)
         if (
             not isinstance(conflict.get("description"), str)
             or not isinstance(conflict.get("resolved"), bool)
@@ -283,29 +276,6 @@ def _parse_verification(
         ):
             raise ValueError("Verifier 冲突格式不正确")
         conflict_ok &= conflict["resolved"]
-        if not conflict["resolved"]:
-            unresolved_conflicts += 1
-        if prefer_latest and not conflict["resolved"]:
-            dated_sources = [
-                (evidence_dates[evidence_id], evidence_id)
-                for evidence_id in conflict_evidence_ids
-                if evidence_dates.get(evidence_id)
-            ]
-            if len({date_value for date_value, _source_id in dated_sources}) >= 2:
-                unresolved_temporal_conflicts += 1
-                latest_date = max(date_value for date_value, _source_id in dated_sources)
-                latest_ids = {
-                    evidence_id
-                    for date_value, evidence_id in dated_sources
-                    if date_value == latest_date
-                }
-                temporal_excluded_evidence_ids.update(
-                    set(conflict_evidence_ids) - latest_ids
-                )
-                temporal_feedback.append(
-                    "temporal: 此独立事实的冲突无需继续搜索；采用发布日期"
-                    f" {latest_date} 的来源 {sorted(latest_ids)}"
-                )
 
     feedback = []
     for issue in issues:
@@ -315,7 +285,6 @@ def _parse_verification(
         for conflict in conflicts
         if not conflict["resolved"]
     )
-    feedback.extend(temporal_feedback)
     feedback.extend(
         f"incomplete: {requirement['description']}"
         for requirement in requirements
@@ -330,16 +299,6 @@ def _parse_verification(
         for query in raw_queries
         if isinstance(query, str) and text_normalize(query)
     ))[:AGENT_MAX_QUERIES]
-    if (
-        unresolved_conflicts
-        and unresolved_temporal_conflicts == unresolved_conflicts
-        and all(
-            isinstance(issue, dict) and issue.get("type") == "conflict"
-            for issue in issues
-        )
-    ):
-        queries = []
-
     valid = (
         payload.get("valid") is True
         and requirement_ok
@@ -349,11 +308,4 @@ def _parse_verification(
     )
     if not valid and not feedback:
         feedback.append("候选答案未通过证据审计")
-    if unresolved_temporal_conflicts:
-        payload["_harness"] = {
-            "temporal_resolution_required": True,
-            "temporal_excluded_evidence_ids": sorted(
-                temporal_excluded_evidence_ids
-            ),
-        }
     return valid, "\n".join(feedback), queries, payload

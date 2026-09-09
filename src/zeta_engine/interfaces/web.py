@@ -4,15 +4,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from zeta_engine.dense import DEFAULT_INDEX_DIR
+from zeta_engine.retrieval.dense import DEFAULT_INDEX_DIR
 from zeta_engine.rag import AGENT_MAX_CYCLES
-from zeta_engine.search import (
+from zeta_engine.retrieval.search import (
     DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
     DEFAULT_RERANKER_MODEL_PATH,
 )
-from zeta_engine.service import answer_question, search_documents
+from zeta_engine.application.service import answer_question, search_documents
 
 logger = logging.getLogger(__name__)
 

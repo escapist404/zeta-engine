@@ -3,13 +3,13 @@
 from dataclasses import dataclass, field
 from hashlib import sha256
 
-from zeta_engine.rag_config import (
+from zeta_engine.rag.config import (
     AGENT_MAX_CHUNKS_PER_URL,
     AGENT_MAX_RESULTS,
     RAG_MAX_CONTEXT_CHARS,
     RAG_MAX_CONTEXT_TOKENS,
 )
-from zeta_engine.tokenizer import text_normalize
+from zeta_engine.infrastructure.tokenizer import text_normalize
 
 
 def _clean(value: object) -> str:

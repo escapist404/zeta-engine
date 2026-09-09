@@ -19,4 +19,3 @@ class RagResponse(TypedDict):
     answer_slots: NotRequired[list[dict[str, object]]]
     model_call_count: NotRequired[int]
     trace: NotRequired[list[dict[str, object]]]
-    collection_trace: NotRequired[dict[str, object]]

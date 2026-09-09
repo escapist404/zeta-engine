@@ -1,17 +1,15 @@
 """Bounded Agent→Tools→Verifier orchestration for RAG."""
 
 import json
-import re
 from collections.abc import Callable
 from typing import cast
 
-from zeta_engine.rag_config import (
+from zeta_engine.rag.config import (
     AGENT_MAX_CYCLES,
     AGENT_MAX_LLM_CALLS,
     RAG_NO_RESULTS_ANSWER,
 )
-from zeta_engine.rag_evidence import (
-    AgentDecision,
+from zeta_engine.rag.evidence import (
     AnswerSlot,
     Evidence,
     EvidenceManager,
@@ -20,33 +18,22 @@ from zeta_engine.rag_evidence import (
     _normalize_text,
     _result_text,
 )
-from zeta_engine.rag_prompts import (
+from zeta_engine.rag.prompts import (
     build_agent_prompt,
     build_prompt,
     build_verifier_prompt,
 )
-from zeta_engine.rag_protocol import (
+from zeta_engine.rag.protocol import (
     _parse_agent_action,
     _parse_verification,
     _valid_calculation_reference,
 )
-from zeta_engine.rag_types import RagResponse
-from zeta_engine.rag_calculations import (
-    _deterministic_calculation_answer,
+from zeta_engine.rag.types import RagResponse
+from zeta_engine.rag.calculations import (
     _format_calculations,
     _run_calculations,
 )
-from zeta_engine.rag_policies import (
-    _deterministic_collection_bucket_answer,
-    _deterministic_complete_table_ratio_answer,
-    _deterministic_numbered_event_answer,
-    _deterministic_sorted_answer,
-    _needs_sorted_object_format,
-    _prefer_latest_record,
-    _requires_complete_collection,
-    _superseded_evidence_ids,
-)
-from zeta_engine.tokenizer import text_normalize
+from zeta_engine.infrastructure.tokenizer import text_normalize
 
 
 def _run_closed_loop(
@@ -262,32 +249,6 @@ def _run_closed_loop(
             return candidate
         return answer_from_supported_claims(ledger) or candidate
 
-    def ledger_is_grounded(ledger: dict[str, object]) -> bool:
-        """Accept a semantically grounded answer despite presentation-only issues."""
-
-        requirements = ledger.get("requirements", [])
-        claims = ledger.get("claims", [])
-        conflicts = ledger.get("conflicts", [])
-        return (
-            isinstance(requirements, list)
-            and bool(requirements)
-            and all(
-                isinstance(item, dict) and item.get("satisfied") is True
-                for item in requirements
-            )
-            and isinstance(claims, list)
-            and bool(claims)
-            and all(
-                isinstance(item, dict) and item.get("status") == "supported"
-                for item in claims
-            )
-            and isinstance(conflicts, list)
-            and all(
-                isinstance(item, dict) and item.get("resolved") is True
-                for item in conflicts
-            )
-        )
-
     def audit(
         answer: str,
         context: str,
@@ -308,11 +269,6 @@ def _run_closed_loop(
                     for calculation in calculations
                 },
                 calculation_count=len(calculations),
-                evidence_dates={
-                    evidence.evidence_id: evidence.published_at
-                    for evidence in visible_evidence
-                },
-                prefer_latest=_prefer_latest_record(query),
             )
         except ValueError as error:
             return (
@@ -395,38 +351,6 @@ def _run_closed_loop(
             verification_feedback=feedback,
         )), []
 
-    def format_verified_answer(
-        answer: str,
-        ledger: dict[str, object],
-    ) -> str:
-        statements = [
-            _clean(claim.get("statement"))
-            for claim in ledger.get("claims", [])
-            if isinstance(claim, dict) and claim.get("status") == "supported"
-        ]
-        if not statements:
-            return answer
-        if _needs_sorted_object_format(query):
-            keyed_statements = []
-            for statement in statements:
-                keys = re.findall(r"第\s*(-?\d+(?:\.\d+)?)", statement)
-                if len(keys) != 1:
-                    keyed_statements = []
-                    break
-                keyed_statements.append((float(keys[0]), statement.rstrip("。；;，,")))
-            if keyed_statements:
-                keyed_statements.sort(key=lambda item: item[0])
-                return "、".join(item[1] for item in keyed_statements) + "。"
-        return ask(f"""请仅使用已验证事实，把候选答案改写成直接回答问题的一句话。
-不得增加、删除或猜测事实，不要输出解释、依据或思考过程。
-排序题必须输出问题要求排序的对象，不能只输出排序键。
-
-问题：{query}
-候选答案：{answer}
-已验证事实：{json.dumps(statements, ensure_ascii=False)}
-
-最终答案：""")
-
     for cycle in range(max_cycles):
         batches: list[tuple[str, list[dict[str, str]]]] = []
         cycle_queries = []
@@ -448,20 +372,6 @@ def _run_closed_loop(
         context, visible_evidence = evidence_manager.build_context(
             newest_ids=newest_ids,
         )
-        superseded_ids = _superseded_evidence_ids(query, visible_evidence)
-        excluded_context_ids = superseded_ids
-        if excluded_context_ids:
-            retained_ids = {
-                evidence.evidence_id for evidence in visible_evidence
-            } - excluded_context_ids
-            context, visible_evidence = evidence_manager.build_context(
-                newest_ids=[
-                    evidence_id
-                    for evidence_id in newest_ids
-                    if evidence_id in retained_ids
-                ],
-                only_ids=retained_ids,
-            )
         visible_ids = {evidence.evidence_id for evidence in visible_evidence}
         context = add_calculations(context, visible_ids)
         cycle_trace = None
@@ -483,56 +393,11 @@ def _run_closed_loop(
                 "context_evidence_ids": [
                     evidence.evidence_id for evidence in visible_evidence
                 ],
-                "superseded_evidence_ids": sorted(superseded_ids),
                 "context_chars": len(context),
                 "context_tokens_estimate": _estimate_tokens(context),
             }
             trace.append(cycle_trace)
         final_cycle = cycle == max_cycles - 1
-        event_answer, event_claims = _deterministic_numbered_event_answer(
-            query,
-            visible_evidence,
-        )
-        if event_answer:
-            if cycle_trace is not None:
-                cycle_trace.update({
-                    "action": "deterministic_event_count",
-                    "answer": event_answer,
-                })
-            return finish(event_answer, claims=event_claims)
-        bucket_answer, bucket_claims = _deterministic_collection_bucket_answer(
-            query,
-            visible_evidence,
-        )
-        if bucket_answer:
-            if cycle_trace is not None:
-                cycle_trace.update({
-                    "action": "deterministic_collection_bucket",
-                    "answer": bucket_answer,
-                })
-            return finish(bucket_answer, claims=bucket_claims)
-        ratio_answer, ratio_claims = _deterministic_complete_table_ratio_answer(
-            query,
-            visible_evidence,
-        )
-        if ratio_answer:
-            if cycle_trace is not None:
-                cycle_trace.update({
-                    "action": "deterministic_table_ratio",
-                    "answer": ratio_answer,
-                })
-            return finish(ratio_answer, claims=ratio_claims)
-        sorted_answer, sorted_claims = _deterministic_sorted_answer(
-            query,
-            visible_evidence,
-        )
-        if sorted_answer:
-            if cycle_trace is not None:
-                cycle_trace.update({
-                    "action": "deterministic_sort",
-                    "answer": sorted_answer,
-                })
-            return finish(sorted_answer, claims=sorted_claims)
         if not context and final_cycle:
             fallback_answer = ask(build_prompt(
                 query,
@@ -598,19 +463,6 @@ def _run_closed_loop(
                         })
             else:
                 update_answer_slots(decision.slots)
-                if (
-                    collection_fn is not None
-                    and not collection_queries
-                    and decision.action != "collection"
-                    and _requires_complete_collection(query)
-                ):
-                    if cycle_trace is not None:
-                        cycle_trace["agent_action_overridden"] = decision.action
-                    decision = AgentDecision(
-                        action="collection",
-                        collection_query=query,
-                        slots=decision.slots,
-                    )
                 if cycle_trace is not None:
                     cycle_trace["answer_slots"] = [
                         slot.public() for slot in answer_slots.values()
@@ -619,7 +471,7 @@ def _run_closed_loop(
                 proposed_claims = decision.claims
                 if decision.action == "collection":
                     if collection_fn is None:
-                        verification_feedback = "当前没有可用的完整集合工具。"
+                        verification_feedback = "当前没有可用的完整表格工具。"
                         if cycle_trace is not None:
                             cycle_trace["action"] = "collection_unavailable"
                         pending_queries = []
@@ -646,10 +498,10 @@ def _run_closed_loop(
                         evidence.evidence_id for evidence in added
                     ])
                     verification_feedback = (
-                        "完整集合工具已返回结果；请使用其中的完整扫描、分组、计数"
-                        "和边界信息继续计算或回答。"
+                            "完整表格工具已返回表格证据和集合大小；请基于这些证据"
+                        "选择通用计算或回答。"
                         if added
-                        else "集合工具没有解析出完整集合；请改用现有证据或补充检索。"
+                        else "表格工具没有解析出完整表格；请改用现有证据或补充检索。"
                     )
                     if cycle_trace is not None:
                         cycle_trace.update({
@@ -695,22 +547,6 @@ def _run_closed_loop(
                                 "action": "calculate",
                                 "calculations": completed,
                             })
-                        deterministic_answer, deterministic_claims = (
-                            _deterministic_calculation_answer(
-                                query,
-                                calculations,
-                            )
-                        )
-                        if deterministic_answer:
-                            if cycle_trace is not None:
-                                cycle_trace.update({
-                                    "action": "deterministic_calculation",
-                                    "answer": deterministic_answer,
-                                })
-                            return finish(
-                                deterministic_answer,
-                                claims=deterministic_claims,
-                            )
                     pending_queries = []
                     continue
                 if decision.action == "search":
@@ -792,105 +628,6 @@ def _run_closed_loop(
                 ledger=ledger,
                 claims=proposed_claims,
             )
-
-        harness_state = ledger.get("_harness")
-        temporal_resolution_required = (
-            harness_state.get("temporal_resolution_required") is True
-            if isinstance(harness_state, dict)
-            else False
-        )
-        if temporal_resolution_required:
-            excluded = set(
-                harness_state.get("temporal_excluded_evidence_ids", [])
-            )
-            projected_ids = visible_ids - excluded
-            projected_context, projected_evidence = evidence_manager.build_context(
-                only_ids=projected_ids,
-            )
-            projected_context = add_calculations(projected_context, projected_ids)
-            projected_answer = ask(build_prompt(
-                query,
-                projected_context,
-                include_citations=include_citations,
-                verification_feedback=feedback,
-            ))
-            (
-                projected_valid,
-                projected_feedback,
-                projected_queries,
-                projected_ledger,
-            ) = audit(
-                projected_answer,
-                projected_context,
-                projected_evidence,
-            )
-            if cycle_trace is not None:
-                cycle_trace["temporal_revision"] = {
-                    "policy": "latest_per_independent_fact",
-                    "excluded_evidence_ids": sorted(excluded),
-                    "answer": projected_answer,
-                    "verification": projected_ledger,
-                    "valid": projected_valid,
-                }
-            if projected_valid:
-                formatted_answer = (
-                    format_verified_answer(projected_answer, projected_ledger)
-                    if _needs_sorted_object_format(query)
-                    else projected_answer
-                )
-                if cycle_trace is not None:
-                    cycle_trace["temporal_revision"]["formatted_answer"] = (
-                        formatted_answer
-                    )
-                return finish(
-                    formatted_answer,
-                    ledger=projected_ledger,
-                )
-            supported_projected_claims = [
-                claim
-                for claim in projected_ledger.get("claims", [])
-                if isinstance(claim, dict) and claim.get("status") == "supported"
-            ]
-            if supported_projected_claims and _needs_sorted_object_format(query):
-                formatted_answer = format_verified_answer(
-                    projected_answer,
-                    projected_ledger,
-                )
-                (
-                    formatted_valid,
-                    formatted_feedback,
-                    formatted_queries,
-                    formatted_ledger,
-                ) = audit(
-                    formatted_answer,
-                    projected_context,
-                    projected_evidence,
-                )
-                if cycle_trace is not None:
-                    cycle_trace["temporal_revision"]["format_revision"] = {
-                        "answer": formatted_answer,
-                        "verification": formatted_ledger,
-                        "valid": formatted_valid,
-                    }
-                if formatted_valid:
-                    return finish(formatted_answer, ledger=formatted_ledger)
-                if (
-                    not formatted_queries
-                    and ledger_is_grounded(formatted_ledger)
-                ):
-                    if cycle_trace is not None:
-                        cycle_trace["temporal_revision"]["format_revision"][
-                            "accepted_as_grounded"
-                        ] = True
-                    return finish(formatted_answer, ledger=formatted_ledger)
-                projected_feedback = formatted_feedback
-                projected_queries = formatted_queries
-            elif not projected_queries and ledger_is_grounded(projected_ledger):
-                return finish(projected_answer, ledger=projected_ledger)
-            if not projected_queries:
-                return finish(projected_answer, ledger=projected_ledger)
-            feedback = projected_feedback
-            verifier_queries = projected_queries
 
         if final_cycle:
             revised_answer, revised_claims = request_answer(

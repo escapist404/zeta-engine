@@ -12,7 +12,7 @@ from hashlib import sha256
 
 from openai import OpenAI
 
-from zeta_engine.rag_config import (
+from zeta_engine.rag.config import (
     AGENT_MAX_CHUNKS_PER_URL,
     AGENT_MAX_CYCLES,
     AGENT_MAX_LLM_CALLS,
@@ -30,8 +30,8 @@ from zeta_engine.rag_config import (
     RAG_MAX_CONTEXT_TOKENS,
     RAG_NO_RESULTS_ANSWER,
 )
-from zeta_engine.rag_engine import _run_closed_loop as _run_closed_loop_impl
-from zeta_engine.rag_evidence import (
+from zeta_engine.rag.engine import _run_closed_loop as _run_closed_loop_impl
+from zeta_engine.rag.evidence import (
     AgentDecision,
     AnswerSlot,
     Evidence,
@@ -43,39 +43,24 @@ from zeta_engine.rag_evidence import (
     _result_text,
     merge_results,
 )
-from zeta_engine.rag_prompts import (
+from zeta_engine.rag.prompts import (
     build_agent_prompt,
     build_prompt,
     build_verifier_prompt,
 )
-from zeta_engine.rag_protocol import (
+from zeta_engine.rag.protocol import (
     _parse_agent_action,
     _parse_answer_slots,
     _parse_json_object,
     _parse_verification,
     _valid_calculation_reference,
 )
-from zeta_engine.rag_types import RagResponse
-from zeta_engine.rag_calculations import (
-    _deterministic_calculation_answer,
+from zeta_engine.rag.types import RagResponse
+from zeta_engine.rag.calculations import (
     _format_calculations,
     _run_calculations,
 )
-from zeta_engine.rag_policies import (
-    _deterministic_collection_bucket_answer,
-    _deterministic_complete_table_ratio_answer,
-    _deterministic_numbered_event_answer,
-    _deterministic_sorted_answer,
-    _needs_sorted_object_format,
-    _parse_ordinal_number,
-    _prefer_latest_record,
-    _query_company_entities,
-    _range_classification_rules,
-    _requires_complete_collection,
-    _superseded_evidence_ids,
-    _title_entity_keys,
-)
-from zeta_engine.tokenizer import text_normalize, tokenize_with_positions
+from zeta_engine.infrastructure.tokenizer import text_normalize, tokenize_with_positions
 
 
 def call_model(prompt: str, *, json_output: bool = False) -> str:

@@ -10,8 +10,8 @@ from urllib.parse import urljoin
 
 import requests
 
-from zeta_engine.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
-from zeta_engine.search import (
+from zeta_engine.retrieval.dense import DEFAULT_INDEX_DIR, search_dense, warmup_dense
+from zeta_engine.retrieval.search import (
     DEFAULT_HYBRID_ALPHA,
     DEFAULT_RERANK_BATCH_SIZE,
     DEFAULT_RERANK_CANDIDATES,
@@ -20,8 +20,8 @@ from zeta_engine.search import (
     search_hybrid,
     search_reranked,
 )
-from zeta_engine.service import answer_question
-from zeta_engine.storage import Storage
+from zeta_engine.application.service import answer_question
+from zeta_engine.infrastructure.storage import Storage
 
 DEFAULT_BASE_URL = "http://10.47.253.18:8080/"
 _TRANSIENT_STATUS_CODES = frozenset({502, 503, 504})

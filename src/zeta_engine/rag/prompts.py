@@ -1,6 +1,6 @@
 """Prompt builders for answer generation, control, and verification."""
 
-from zeta_engine.rag_config import AGENT_MAX_QUERIES
+from zeta_engine.rag.config import AGENT_MAX_QUERIES
 
 
 def build_prompt(
@@ -61,8 +61,8 @@ def build_agent_prompt(
         )
     )
     collection_rule = (
-        """2. 先判断答案是否依赖完整名单、表格或重复记录的计数、筛选、交集，或者依赖这些集合计算比例、平均值、上下界。
-   如果依赖且尚未执行对应集合查询，优先返回 collection，让工具扫描完整资源并保留分组边界；
+        """2. 先判断答案是否依赖完整 HTML 表格的计数、筛选或集合运算。
+   如果依赖且尚未执行对应集合查询，优先返回 collection，让工具扫描候选文档中的全部表格；
    不要手工枚举长列表，也不要把当前 Top-K 当作完整集合。
 3. 计算派生量时，操作数必须来自问题和同一口径的材料。不得凭常识引入二者都未限定的新总体；
    有多种解释时，优先选择不增加新实体、能够用现有完整证据闭合计算的解释，并在答案中简短说明口径。"""
@@ -71,12 +71,12 @@ def build_agent_prompt(
     )
     collection_action = (
         """- collection：
-  {"action":"collection","query":"保留原问题全部范围、筛选条件和计算目标的集合查询","slots":[]}
+  {"action":"collection","query":"用于定位完整表格的检索查询","slots":[]}
 """
         if collection_available
         else ""
     )
-    return f"""你负责决定现在直接回答、继续检索、扫描完整集合，还是执行一次确定性计算。
+    return f"""你负责决定现在直接回答、继续检索、扫描完整表格，还是执行一次确定性计算。
 尽量给出答案；材料不完整时可以给出部分答案或注明不确定性。
 只输出一个 JSON 对象。
 
@@ -147,7 +147,7 @@ def build_verifier_prompt(query: str, context: str, answer: str) -> str:
    不要求结论在原文中逐字出现。
 4. 问题要求总数、全部项目或跨多个对象汇总时，当前 Top-K 中出现的记录不等于完整集合；
    证据不能说明覆盖完整范围时 valid=false，并生成针对遗漏对象或范围的补充查询。
-   如果确定性集合工具已经给出完整扫描、分组边界和计数，应将其视为完整集合证据。
+   如果完整表格工具已经给出全部数据单元和集合大小，可将其视为该表格的完整证据。
 5. 答案与材料明显矛盾、计算明显错误或漏掉明确要求时 valid=false。
    比例、平均值和上下界等派生量应按问题措辞和已有集合确定操作数，不得预设材料必须提供某个未被问题指定的口径。
    不得用常识中的另一种指标定义替换候选答案明确说明且由同口径证据支持的定义。

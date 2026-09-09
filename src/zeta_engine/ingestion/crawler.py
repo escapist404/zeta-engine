@@ -15,7 +15,7 @@ from resiliparse.extract.html2text import extract_plain_text
 from resiliparse.parse.html import HTMLTree
 from url_normalize import url_normalize
 
-from zeta_engine.constants import (
+from zeta_engine.infrastructure.constants import (
     CONTENT_SELECTORS,
     EXCLUDED_HTML_SELECTORS,
     HEADERS,
@@ -23,8 +23,8 @@ from zeta_engine.constants import (
     TIMEOUT,
     TITLE_SELECTORS,
 )
-from zeta_engine.extraction_rules import resolve_extraction_rule
-from zeta_engine.storage import Storage
+from zeta_engine.ingestion.extraction_rules import resolve_extraction_rule
+from zeta_engine.infrastructure.storage import Storage
 
 logger = logging.getLogger(__name__)
 SKIPPED_PAGE = object()

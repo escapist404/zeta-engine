@@ -8,11 +8,11 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
-from zeta_engine.dense import DenseHit
-from zeta_engine.index import build_index
+from zeta_engine.retrieval.dense import DenseHit
+from zeta_engine.retrieval.index import build_index
 from zeta_engine.rag import AGENT_MAX_CYCLES
-from zeta_engine.storage import Storage
-from zeta_engine.web import create_server
+from zeta_engine.infrastructure.storage import Storage
+from zeta_engine.interfaces.web import create_server
 
 
 class WebTest(unittest.TestCase):
@@ -65,7 +65,7 @@ class WebTest(unittest.TestCase):
                 self.assertIn("10月14日", payload["results"][0]["snippet"])
 
                 with patch(
-                    "zeta_engine.service.search_dense",
+                    "zeta_engine.application.service.search_dense",
                     return_value=[DenseHit(1, 0.9, "Ｄｅｎｓｅ 命中１０")],
                 ):
                     with urlopen(
@@ -78,7 +78,7 @@ class WebTest(unittest.TestCase):
                 )
 
                 with patch(
-                    "zeta_engine.service.search_hybrid_with_snippets",
+                    "zeta_engine.application.service.search_hybrid_with_snippets",
                     return_value=([1], {1: "Hybrid 命中１０"}),
                 ) as search_hybrid:
                     with urlopen(
@@ -94,7 +94,7 @@ class WebTest(unittest.TestCase):
                 self.assertEqual(search_hybrid.call_args.kwargs["limit"], 20)
 
                 with patch(
-                    "zeta_engine.service.search_reranked",
+                    "zeta_engine.application.service.search_reranked",
                     return_value=[1],
                 ) as search_reranked:
                     with urlopen(
@@ -121,7 +121,7 @@ class WebTest(unittest.TestCase):
                     "snippet": "RAG 相关片段",
                 }]
                 with patch(
-                    "zeta_engine.web.answer_question",
+                    "zeta_engine.interfaces.web.answer_question",
                     return_value={
                         "answer": "这是模型回答。[文档1]",
                         "results": rag_results,

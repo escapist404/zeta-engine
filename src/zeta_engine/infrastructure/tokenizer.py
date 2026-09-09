@@ -2,7 +2,7 @@ import unicodedata
 
 import jieba
 
-from zeta_engine.constants import STOPWORDS
+from zeta_engine.infrastructure.constants import STOPWORDS
 
 TEXT_NORMALIZER_VERSION = "1"
 
